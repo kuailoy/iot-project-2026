@@ -39,10 +39,11 @@ When a task is completed, close the related Issue.
 
 | Milestone               | Deadline |
 | ----------------------- | -------- |
-| Project proposal        | TBD      |
-| Final project selection | TBD      |
-| Initial presentation    | TBD      |
-| Final presentation      | TBD      |
+| Project proposal        | Sep 30      |
+| Project plan review.    |.OCT 8        |
+| Preliminary technical report | OCT 31      |
+| Final technical report    | DEC 8      |
+| Final presentation (Trade Fair)     | DEC 10      |
 
 ## Basic Git Commands
 
