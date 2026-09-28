@@ -66,3 +66,23 @@ Build a small smart aquarium that can monitor and automatically manage the aquar
 - Water tank and tubing
 
 The project combines sensors, data collection, automation and actuators in a relatively simple and visually interesting prototype. More advanced features can be added if there is enough time.
+
+---
+
+## 4. E-Ink Desktop Gadget
+
+A small and attractive desktop device that displays environmental information and useful daily information such as weather, calendar, tasks, and habits.
+
+**Main features:** temperature/humidity and optional air-quality monitoring, E-Ink display, Wi-Fi connectivity, weather, calendar, and task/habit reminders.
+
+Reference Project: https://github.com/danking6/veltoc
+![alt text](../assets/e-ink-example.png)
+
+---
+
+## 5. Desktop AI Robot
+
+A small desktop robot that monitors its environment and interacts with the user through voice and AI. It can manage tasks and habits, answer questions using an LLM, and respond through a display, speaker, and simple movement.
+
+**Main features:** environmental sensors, microphone, STT, LLM, TTS, display, speaker, and servo-controlled movement.
+![alt text](../assets/desktop-robot-example.png)
