@@ -2,6 +2,8 @@
 
 This repository is used for managing and developing our group IoT project.
 
+## Components
+
 - [ESP32 + BMS — Seeed Studio XIAO ESP32S3 (113991114)](https://www.mouser.fi/en/ProductDetail/Seeed-Studio/113991114)
 - [E-ink controller — Adafruit eInk Breakout Friend with 32KB SRAM (4224)](https://www.digikey.fi/en/products/detail/adafruit-industries-llc/4224/10107219)
 - [E-ink display — Adafruit 7.5" 800×480 Tri-Color eInk / ePaper — Bare Display (6415)](https://www.digikey.fi/en/products/detail/adafruit-industries-llc/6415/27545882)
