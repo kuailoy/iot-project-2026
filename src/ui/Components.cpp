@@ -6,7 +6,9 @@
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
+#include "fonts/ClockFont.h"
 
+const GFXfont* const FONT_CLOCK = &ClockFont;
 const GFXfont* const FONT_TIME = &FreeSansBold24pt7b;
 const GFXfont* const FONT_TEMP = &FreeSansBold24pt7b;
 const GFXfont* const FONT_BODY = &FreeSans12pt7b;
@@ -17,11 +19,14 @@ namespace Components {
 
 // ---------- Text ----------
 
-static uint16_t textWidth(Adafruit_GFX& gfx, const char* text, const GFXfont* font) {
+// Width of the ink, and where it starts relative to the cursor
+static uint16_t textWidth(Adafruit_GFX& gfx, const char* text, const GFXfont* font,
+                          int16_t* inkStart) {
     int16_t x1, y1;
     uint16_t w, h;
     gfx.setFont(font);
     gfx.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+    *inkStart = x1;
     return w;
 }
 
@@ -35,12 +40,16 @@ void drawText(Adafruit_GFX& gfx, int16_t x, int16_t y, const char* text,
 
 void drawTextRight(Adafruit_GFX& gfx, int16_t rightX, int16_t y, const char* text,
                    const GFXfont* font, uint16_t color) {
-    drawText(gfx, rightX - textWidth(gfx, text, font), y, text, font, color);
+    int16_t inkStart;
+    uint16_t width = textWidth(gfx, text, font, &inkStart);
+    drawText(gfx, rightX - width - inkStart, y, text, font, color);
 }
 
 void drawTextCentered(Adafruit_GFX& gfx, int16_t centerX, int16_t y, const char* text,
                       const GFXfont* font, uint16_t color) {
-    drawText(gfx, centerX - textWidth(gfx, text, font) / 2, y, text, font, color);
+    int16_t inkStart;
+    uint16_t width = textWidth(gfx, text, font, &inkStart);
+    drawText(gfx, centerX - width / 2 - inkStart, y, text, font, color);
 }
 
 void drawTemperature(Adafruit_GFX& gfx, int16_t x, int16_t y, const char* value,

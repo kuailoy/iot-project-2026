@@ -17,7 +17,8 @@ constexpr int16_t FOOTER_LINE_Y = 404;
 
 // ---------- Fonts (defined in Components.cpp) ----------
 
-extern const GFXfont* const FONT_TIME;       // Big clock
+extern const GFXfont* const FONT_CLOCK;      // Huge clock, digits and ':' only
+extern const GFXfont* const FONT_TIME;       // Header clock
 extern const GFXfont* const FONT_TEMP;       // Temperatures
 extern const GFXfont* const FONT_BODY;       // Normal text, menu rows
 extern const GFXfont* const FONT_SMALL;      // Labels

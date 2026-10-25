@@ -49,6 +49,7 @@ const unsigned long WEATHER_INTERVAL_MS = 15 * 60 * 1000UL;
 const unsigned long WEATHER_RETRY_MS = 60 * 1000UL;
 const unsigned long SENSOR_INTERVAL_MS = 30 * 1000UL;
 const unsigned long LONG_PRESS_MS = 800;
+const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
 
 // Wait for time, weather and sensor before the first (slow) E-Ink refresh
 const unsigned long FIRST_DRAW_DELAY_MS = 10 * 1000UL;
@@ -241,12 +242,20 @@ void updateDisplay() {
 }
 
 void handleInput() {
+    static unsigned long lastInput = 0;
+
+    // Without the encoder there is no way to wake up, so never sleep
     if (!encoderFound) {
         return;
     }
 
+    if (millis() - lastInput >= SLEEP_AFTER_MS) {
+        ui.enterSleep();
+    }
+
     int32_t steps = rotary.getEncoderDelta();
     if (steps != 0) {
+        lastInput = millis();
         ui.onRotate(steps);
     }
 
@@ -256,6 +265,10 @@ void handleInput() {
     static unsigned long pressStart = 0;
 
     bool pressed = !rotary.digitalRead(ENCODER_BUTTON_PIN);  // Active low
+
+    if (pressed) {
+        lastInput = millis();
+    }
 
     if (pressed && !wasPressed) {
         pressStart = millis();

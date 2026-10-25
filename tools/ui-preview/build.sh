@@ -13,14 +13,14 @@ g++ -std=c++14 -O1 -DARDUINO=100 \
     -Istub -I"$GFX" -I"$ROOT/src/ui" \
     preview.cpp "$GFX/Adafruit_GFX.cpp" \
     "$ROOT/src/ui/Components.cpp" \
-    "$ROOT/src/ui/pages/HomePage.cpp" \
-    "$ROOT/src/ui/pages/MenuPage.cpp" \
+    "$ROOT"/src/ui/pages/*.cpp \
     -o out/preview
 
 ./out/preview
 python -c "
+import glob
 from PIL import Image
-for name in ('home', 'home-empty', 'menu'):
-    Image.open('out/%s.pbm' % name).save('out/%s.png' % name)
+for path in glob.glob('out/*.pbm'):
+    Image.open(path).save(path[:-4] + '.png')
 print('Saved PNG files in out/')
 "

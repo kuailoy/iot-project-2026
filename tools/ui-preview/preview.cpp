@@ -9,6 +9,7 @@
 #include "Components.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/SleepPage.h"
 
 static bool savePbm(GFXcanvas1& canvas, const char* path) {
     FILE* file = fopen(path, "wb");
@@ -34,6 +35,7 @@ static AppData demoData() {
     data.now.tm_mday = 5;
     data.now.tm_mon = 9;   // October (0 = January)
     data.now.tm_wday = 1;  // Monday
+    data.now.tm_yday = 277;
 
     data.weatherValid = true;
     data.outdoorTemp = 8;
@@ -71,6 +73,14 @@ int main() {
     menu.draw(canvas, data);
     savePbm(canvas, "out/menu.pbm");
 
-    printf("Saved out/home.pbm, out/home-empty.pbm and out/menu.pbm\n");
+    SleepPage sleep;
+    AppData night = data;
+    night.now.tm_hour = 22;
+    night.now.tm_min = 47;
+    canvas.fillScreen(EPD_WHITE);
+    sleep.draw(canvas, night);
+    savePbm(canvas, "out/sleep.pbm");
+
+    printf("Saved out/home.pbm, out/home-empty.pbm, out/menu.pbm and out/sleep.pbm\n");
     return 0;
 }

@@ -9,7 +9,7 @@ void UI::begin(Adafruit_EPD& epd, const AppData& appData) {
 // ---------- Input ----------
 
 void UI::onRotate(int steps) {
-    if (steps == 0) {
+    if (steps == 0 || wakeUp()) {
         return;
     }
 
@@ -22,6 +22,10 @@ void UI::onRotate(int steps) {
 }
 
 void UI::onPress() {
+    if (wakeUp()) {
+        return;
+    }
+
     if (currentPage == HOME) {
         // main.cpp fetches new data, then requests a redraw
         refreshRequested = true;
@@ -39,6 +43,10 @@ void UI::onPress() {
 }
 
 void UI::onLongPress() {
+    if (wakeUp()) {
+        return;
+    }
+
     if (currentPage != HOME) {
         openPage(HOME);
     }
@@ -60,6 +68,9 @@ void UI::update() {
         case MENU:
             menuPage.draw(*display, *data);
             break;
+        case SLEEP:
+            sleepPage.draw(*display, *data);
+            break;
     }
 
     display->display();
@@ -70,6 +81,20 @@ bool UI::takeRefreshRequest() {
     bool requested = refreshRequested;
     refreshRequested = false;
     return requested;
+}
+
+void UI::enterSleep() {
+    if (currentPage != SLEEP) {
+        openPage(SLEEP);
+    }
+}
+
+bool UI::wakeUp() {
+    if (currentPage != SLEEP) {
+        return false;
+    }
+    openPage(HOME);
+    return true;
 }
 
 void UI::openPage(Page page) {

@@ -4,6 +4,7 @@
 
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/SleepPage.h"
 
 // Keeps track of the current page, handles encoder input
 // and redraws the E-Ink display only when something changed.
@@ -27,10 +28,15 @@ public:
     // True once after the user pressed "refresh" on the Home page
     bool takeRefreshRequest();
 
+    // Show the sleep screen, any input wakes up to Home
+    void enterSleep();
+    bool isAsleep() const { return currentPage == SLEEP; }
+
 private:
     enum Page {
         HOME,
-        MENU
+        MENU,
+        SLEEP
     };
 
     Adafruit_EPD* display = nullptr;
@@ -41,6 +47,10 @@ private:
 
     HomePage homePage;
     MenuPage menuPage;
+    SleepPage sleepPage;
+
+    // Returns true if the input was used to wake up
+    bool wakeUp();
 
     void openPage(Page page);
 };
