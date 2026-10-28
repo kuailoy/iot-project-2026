@@ -38,11 +38,13 @@ When a task is completed, close the related Issue.
 
 ```text
 .
-├── README.md
-├── meetings/          # Meeting notes and decisions
+├── platformio.ini     # PlatformIO board, framework and library configuration
+├── include/           # Wiring definitions and local secrets template
+├── src/               # Firmware source (app, services and UI)
+├── tools/             # Font generator and desktop UI preview
+├── assets/            # UI reference images and project visuals
 ├── docs/              # Project documentation
-├── src/               # Source code
-└── assets/            # Diagrams, images and other project materials
+└── meetings/          # Meeting notes and decisions
 ```
 
 ## Project Timeline
