@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-// Fetches the OpenWeatherMap current-weather JSON over verified HTTPS.
-// Supply the API key and the PEM-encoded root CA used to verify the server.
+// Fetches the OpenWeatherMap current-weather JSON over HTTPS.
+// Certificate verification is disabled for connectivity testing.
 bool fetchWeather(double latitude, double longitude, const char* api_key,
-                  const char* root_ca, String& response, String& error);
+                  String& response, String& error);

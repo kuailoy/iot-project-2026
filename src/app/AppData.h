@@ -15,7 +15,7 @@ struct AppData {
     // ---------- Outdoor weather (Open-Meteo) ----------
     bool weatherValid = false;
     float outdoorTemp = 0;
-    int weatherCode = 0;       // WMO code, 0 = clear sky
+    int weatherCode = 0;       // OpenWeatherMap condition code
     char city[24] = "Kuopio";
 
     // ---------- Indoor sensor (SCD-41) ----------

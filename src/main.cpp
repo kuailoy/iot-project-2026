@@ -5,8 +5,6 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
 #include <time.h>
 
 // Display: E-Ink
@@ -26,14 +24,18 @@
 // Project: wiring, shared data and UI
 #include "pins.h"
 #include "app/AppData.h"
+#include "services/WeatherService.h"
 #include "ui/UI.h"
 
-// Wi-Fi credentials: copy include/secrets.example.h to include/secrets.h
-#if __has_include("secrets.h")
-#include "secrets.h"
-#else
+// Wi-Fi credentials are injected from .env.local by the PlatformIO pre-script.
+#ifndef WIFI_SSID
 #define WIFI_SSID ""
+#endif
+#ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD ""
+#endif
+#ifndef WEATHER_API_KEY
+#define WEATHER_API_KEY ""
 #endif
 
 // ---------- Settings ----------
@@ -152,7 +154,7 @@ void initEncoder() {
 
 void initWiFi() {
     if (strlen(WIFI_SSID) == 0) {
-        Serial.println("Wi-Fi skipped: no include/secrets.h");
+        Serial.println("Wi-Fi skipped: WIFI_SSID is not set in .env.local");
         return;
     }
 
@@ -298,36 +300,28 @@ void updateWeather(bool force) {
     lastAttempt = millis();
     everAttempted = true;
 
-    char url[160];
-    snprintf(url, sizeof(url),
-             "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f"
-             "&current=temperature_2m,weather_code",
-             LATITUDE, LONGITUDE);
-
-    // TODO: Add the server's root certificate instead of skipping the check
-    WiFiClientSecure client;
-    client.setInsecure();
-
-    HTTPClient http;
-    http.begin(client, url);
-    int status = http.GET();
-    if (status != HTTP_CODE_OK) {
-        Serial.printf("Weather request failed: %d\n", status);
-        http.end();
+    String response;
+    String requestError;
+    if (!fetchWeather(LATITUDE, LONGITUDE, WEATHER_API_KEY, response, requestError)) {
+        Serial.printf("Weather request failed: %s\n", requestError.c_str());
         return;
     }
 
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, http.getStream());
-    http.end();
+    DeserializationError error = deserializeJson(doc, response);
     if (error) {
         Serial.printf("Weather JSON error: %s\n", error.c_str());
         return;
     }
 
-    float temperature = doc["current"]["temperature_2m"];
-    int code = doc["current"]["weather_code"];
-    Serial.printf("Weather: %.1f C, code %d\n", temperature, code);
+    float temperature = doc["main"]["temp"] | NAN;
+    int code = doc["weather"][0]["id"] | 0;
+    const char* city = doc["name"] | "unknown";
+    if (!isfinite(temperature) || doc["weather"][0]["id"].isNull()) {
+        Serial.println("Weather JSON error: response is missing temperature or condition code");
+        return;
+    }
+    Serial.printf("Weather: %s, %.1f C, code %d\n", city, temperature, code);
 
     bool changed = !appData.weatherValid ||
                    lroundf(temperature) != lroundf(appData.outdoorTemp) ||
