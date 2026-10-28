@@ -1,5 +1,6 @@
 #include "HomePage.h"
 #include "../Components.h"
+#include "../WeatherIcons.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -21,8 +22,7 @@ void HomePage::draw(Adafruit_GFX& gfx, const AppData& data) {
     drawHeader(gfx, data);
 
     // ---------- Outdoor weather ----------
-    // TODO: Pick the icon from the weather code (sun, rain, snow...)
-    drawCloudIcon(gfx, 49, 147);
+    drawWeatherIcon(gfx, 49, 141, weatherIconFromCode(data.weatherCode));
     formatTemp(text, sizeof(text), data.weatherValid, data.outdoorTemp);
     drawTemperature(gfx, 212, 194, text, FONT_TEMP);
     drawText(gfx, 212, 232, data.city, FONT_BODY);

@@ -10,6 +10,7 @@
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
 #include "pages/SleepPage.h"
+#include "WeatherIcons.h"
 
 static bool savePbm(GFXcanvas1& canvas, const char* path) {
     FILE* file = fopen(path, "wb");
@@ -81,6 +82,29 @@ int main() {
     sleep.draw(canvas, night);
     savePbm(canvas, "out/sleep.pbm");
 
-    printf("Saved out/home.pbm, out/home-empty.pbm, out/menu.pbm and out/sleep.pbm\n");
+    // All weather icons with an example OpenWeatherMap code each
+    const int codes[] = {800, 801, 803, 300, 500, 211, 601, 741};
+    canvas.fillScreen(EPD_WHITE);
+    for (int i = 0; i < 8; i++) {
+        int16_t cellX = (i % 4) * 200;
+        int16_t cellY = (i / 4) * 240;
+        WeatherIcon icon = weatherIconFromCode(codes[i]);
+        char label[24];
+        snprintf(label, sizeof(label), "%d", codes[i]);
+
+        drawWeatherIcon(canvas, cellX + 29, cellY + 50, icon);
+        Components::drawTextCentered(canvas, cellX + 100, cellY + 180, weatherIconName(icon), FONT_BODY);
+        Components::drawTextCentered(canvas, cellX + 100, cellY + 205, label, FONT_SMALL);
+    }
+    savePbm(canvas, "out/weather-icons.pbm");
+
+    // Home page with rain
+    AppData rainy = data;
+    rainy.weatherCode = 501;
+    canvas.fillScreen(EPD_WHITE);
+    home.draw(canvas, rainy);
+    savePbm(canvas, "out/home-rain.pbm");
+
+    printf("Saved preview images in out/\n");
     return 0;
 }

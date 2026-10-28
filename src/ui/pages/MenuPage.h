@@ -9,7 +9,7 @@
 class MenuPage {
 public:
     enum Item {
-        DASHBOARD,
+        DASHBOARD, 
         POMODORO,
         CALENDAR,
         HABITS,

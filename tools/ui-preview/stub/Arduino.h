@@ -2,6 +2,7 @@
 
 // Minimal Arduino replacement so Adafruit GFX can run on a PC
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -11,6 +12,8 @@
 #include "Print.h"
 
 typedef bool boolean;
+
+using std::max;
 
 class __FlashStringHelper;
 
