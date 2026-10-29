@@ -15,6 +15,13 @@ constexpr int16_t MARGIN = 32;
 constexpr int16_t HEADER_LINE_Y = 96;
 constexpr int16_t FOOTER_LINE_Y = 404;
 
+// ---------- Colors ----------
+// Black text and lines on a white background.
+// Swap the two values for white on black.
+
+constexpr uint16_t COLOR_BG = EPD_WHITE;  // Background
+constexpr uint16_t COLOR_FG = EPD_BLACK;  // Text, lines and icons
+
 // ---------- Fonts (defined in Components.cpp) ----------
 
 extern const GFXfont* const FONT_CLOCK;      // Huge clock, digits and ':' only
@@ -29,11 +36,11 @@ extern const GFXfont* const FONT_SMALL_BOLD; // Date, footer hints
 namespace Components {
 
 void drawText(Adafruit_GFX& gfx, int16_t x, int16_t y, const char* text,
-              const GFXfont* font, uint16_t color = EPD_BLACK);
+              const GFXfont* font, uint16_t color = COLOR_FG);
 void drawTextRight(Adafruit_GFX& gfx, int16_t rightX, int16_t y, const char* text,
-                   const GFXfont* font, uint16_t color = EPD_BLACK);
+                   const GFXfont* font, uint16_t color = COLOR_FG);
 void drawTextCentered(Adafruit_GFX& gfx, int16_t centerX, int16_t y, const char* text,
-                      const GFXfont* font, uint16_t color = EPD_BLACK);
+                      const GFXfont* font, uint16_t color = COLOR_FG);
 
 // GFX fonts have no degree sign, so it is drawn as a small circle
 void drawTemperature(Adafruit_GFX& gfx, int16_t x, int16_t y, const char* value,
@@ -57,7 +64,7 @@ void drawHeader(Adafruit_GFX& gfx, const AppData& data);
 // Line and centered input hints at the bottom of the screen
 void drawFooter(Adafruit_GFX& gfx, const char* hints);
 
-// One row of a list, inverted (white on black) when selected
+// One row of a list, colors inverted when selected
 void drawMenuRow(Adafruit_GFX& gfx, int16_t y, int16_t h, const char* label,
                  const char* value, bool selected, bool showDivider);
 

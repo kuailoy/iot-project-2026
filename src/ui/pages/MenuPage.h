@@ -24,6 +24,7 @@ public:
     // Move the selection by encoder steps, wraps around at both ends
     void move(int steps);
     Item selected() const { return selectedItem; }
+    void select(Item item) { selectedItem = item; }
 
 private:
     Item selectedItem = DASHBOARD;

@@ -26,6 +26,8 @@
 #include "app/AppData.h"
 #include "services/WeatherService.h"
 #include "ui/UI.h"
+#include "display/EinkDisplay.h"
+#include "display/EinkBenchmark.h"
 
 // Wi-Fi credentials are injected from .env.local by the PlatformIO pre-script.
 #ifndef WIFI_SSID
@@ -56,12 +58,16 @@ const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
 // Wait for time, weather and sensor before the first (slow) E-Ink refresh
 const unsigned long FIRST_DRAW_DELAY_MS = 10 * 1000UL;
 
-// Test mode (UI_DEMO_MODE in platformio.ini): how long each page stays on screen
-const unsigned long DEMO_PAGE_MS = 20 * 1000UL;
+// Test mode: set UI_DEMO_MODE=1 in platformio.ini to show every page in turn
+#ifndef UI_DEMO_MODE
+#define UI_DEMO_MODE 0
+#endif
+const unsigned long DEMO_PAGE_MS = 20 * 1000UL;  // How long each page stays on screen
 
 // ---------- Global objects ----------
 
-ThinkInk_750_Tricolor_AABMFGNR display(EPD_DC, EPD_RESET, EPD_CS, SRAM_CS, EPD_BUSY);
+// Refresh mode and speed options: EPD_* flags in platformio.ini
+EinkDisplay display(EPD_DC, EPD_RESET, EPD_CS, SRAM_CS, EPD_BUSY);
 SensirionI2cScd4x scd4x;
 Adafruit_seesaw rotary;
 AppData appData;
@@ -96,6 +102,15 @@ void setup() {
     Serial.println("System starting...");
 
     initDisplay();
+
+#if EPD_BENCHMARK
+    // Benchmark only: the normal app does not start
+    runEinkBenchmark(display);
+    while (true) {
+        delay(1000);
+    }
+#endif
+
     initSensor();
     initEncoder();
     initWiFi();
@@ -105,16 +120,15 @@ void setup() {
 // ---------- Main loop ----------
 
 void loop() {
-#ifndef UI_DEMO_MODE
+#if UI_DEMO_MODE
+    showPagesInTurn();
+#else
     handleInput();
 #endif
     updateTime();
     readSensor();
     updateWeather(ui.takeRefreshRequest());
     updateDisplay();
-#ifdef UI_DEMO_MODE
-    showPagesInTurn();
-#endif
 
     delay(50);
 }
@@ -133,7 +147,9 @@ void initI2C() {
 }
 
 void initDisplay() {
-    display.begin(THINKINK_TRICOLOR);
+    if (!display.begin()) {
+        Serial.println("Display setup failed");
+    }
     ui.begin(display, appData);
     Serial.println("Display initialized");
 }
@@ -250,6 +266,7 @@ void updateDisplay() {
         return;
     }
     ui.update();
+    display.tick();  // Powers the panel down after EPD_KEEP_POWER_MS
 }
 
 void handleInput() {
