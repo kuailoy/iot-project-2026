@@ -38,7 +38,7 @@ void SleepPage::draw(Adafruit_GFX& gfx, const AppData& data) {
     drawTextCentered(gfx, centerX, 225, time, FONT_CLOCK);
     drawTextCentered(gfx, centerX, 267, date, FONT_SMALL_BOLD);
 
-    gfx.fillRect(centerX - 50, 299, 100, 2, EPD_BLACK);
+    gfx.fillRect(centerX - 50, 299, 100, 2, COLOR_FG);
 
     const Quote& quote = QUOTES[data.now.tm_yday % QUOTE_COUNT];
     drawTextCentered(gfx, centerX, 348, quote.text, FONT_BODY);

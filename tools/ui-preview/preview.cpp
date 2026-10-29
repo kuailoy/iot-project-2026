@@ -57,19 +57,19 @@ int main() {
     AppData data = demoData();
 
     HomePage home;
-    canvas.fillScreen(EPD_WHITE);
+    canvas.fillScreen(COLOR_BG);
     home.draw(canvas, data);
     savePbm(canvas, "out/home.pbm");
 
     // Before Wi-Fi, NTP and sensors have delivered anything
     AppData empty;
-    canvas.fillScreen(EPD_WHITE);
+    canvas.fillScreen(COLOR_BG);
     home.draw(canvas, empty);
     savePbm(canvas, "out/home-empty.pbm");
 
     MenuPage menu;
     menu.move(1);
-    canvas.fillScreen(EPD_WHITE);
+    canvas.fillScreen(COLOR_BG);
     menu.draw(canvas, data);
     savePbm(canvas, "out/menu.pbm");
 
@@ -77,7 +77,7 @@ int main() {
     AppData night = data;
     night.now.tm_hour = 22;
     night.now.tm_min = 47;
-    canvas.fillScreen(EPD_WHITE);
+    canvas.fillScreen(COLOR_BG);
     sleep.draw(canvas, night);
     savePbm(canvas, "out/sleep.pbm");
 

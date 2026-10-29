@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Adafruit_EPD.h>
+#include "../display/EinkDisplay.h"
 
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
@@ -12,7 +12,7 @@ class UI {
 public:
     // Call once after the E-Ink display has been initialized.
     // Pages read everything they show from data.
-    void begin(Adafruit_EPD& display, const AppData& data);
+    void begin(EinkDisplay& display, const AppData& data);
 
     // Encoder events, call from handleInput()
     void onRotate(int steps);
@@ -32,6 +32,10 @@ public:
     void enterSleep();
     bool isAsleep() const { return currentPage == SLEEP; }
 
+    // Test mode (UI_DEMO_MODE): open the next page, back to Home after the last.
+    // On the menu it first selects each line in turn.
+    void showNextPage();
+
 private:
     enum Page {
         HOME,
@@ -39,7 +43,7 @@ private:
         SLEEP
     };
 
-    Adafruit_EPD* display = nullptr;
+    EinkDisplay* display = nullptr;
     const AppData* data = nullptr;
     Page currentPage = HOME;
     bool redrawNeeded = true;

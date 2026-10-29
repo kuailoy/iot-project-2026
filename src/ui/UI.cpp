@@ -1,6 +1,8 @@
 #include "UI.h"
 
-void UI::begin(Adafruit_EPD& epd, const AppData& appData) {
+#include "Components.h"
+
+void UI::begin(EinkDisplay& epd, const AppData& appData) {
     display = &epd;
     data = &appData;
     redrawNeeded = true;
@@ -60,6 +62,7 @@ void UI::update() {
     }
 
     display->clearBuffer();
+    display->fillScreen(COLOR_BG);
 
     switch (currentPage) {
         case HOME:
@@ -73,7 +76,7 @@ void UI::update() {
             break;
     }
 
-    display->display();
+    display->refresh();  // Picks full or partial waveform itself
     redrawNeeded = false;
 }
 
@@ -86,6 +89,28 @@ bool UI::takeRefreshRequest() {
 void UI::enterSleep() {
     if (currentPage != SLEEP) {
         openPage(SLEEP);
+    }
+}
+
+void UI::showNextPage() {
+    // Add new pages here so the test mode shows them too
+    switch (currentPage) {
+        case HOME:
+            menuPage.select(MenuPage::DASHBOARD);
+            openPage(MENU);
+            break;
+        case MENU:
+            // Walk through the menu one line at a time, then go on
+            if (menuPage.selected() == MenuPage::ITEM_COUNT - 1) {
+                openPage(SLEEP);
+            } else {
+                menuPage.move(1);
+                redrawNeeded = true;
+            }
+            break;
+        case SLEEP:
+            openPage(HOME);
+            break;
     }
 }
 

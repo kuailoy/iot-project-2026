@@ -27,7 +27,7 @@ void HomePage::draw(Adafruit_GFX& gfx, const AppData& data) {
     drawTemperature(gfx, 212, 194, text, FONT_TEMP);
     drawText(gfx, 212, 232, data.city, FONT_BODY);
 
-    gfx.fillRect(481, 121, 2, 140, EPD_BLACK);
+    gfx.fillRect(481, 121, 2, 140, COLOR_FG);
 
     // ---------- Indoor sensor ----------
     drawText(gfx, 516, 146, "INDOOR", FONT_SMALL);
@@ -40,7 +40,7 @@ void HomePage::draw(Adafruit_GFX& gfx, const AppData& data) {
     }
     drawText(gfx, 516, 240, text, FONT_BODY);
 
-    gfx.fillRect(MARGIN, 282, SCREEN_W - 2 * MARGIN, 2, EPD_BLACK);
+    gfx.fillRect(MARGIN, 282, SCREEN_W - 2 * MARGIN, 2, COLOR_FG);
 
     // ---------- Next calendar event ----------
     drawCalendarIcon(gfx, 39, 313);
