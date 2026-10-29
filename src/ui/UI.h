@@ -32,6 +32,9 @@ public:
     void enterSleep();
     bool isAsleep() const { return currentPage == SLEEP; }
 
+    // Test mode (UI_DEMO_MODE): open the next page, back to Home after the last
+    void showNextPage();
+
 private:
     enum Page {
         HOME,

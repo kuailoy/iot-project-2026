@@ -56,6 +56,9 @@ const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
 // Wait for time, weather and sensor before the first (slow) E-Ink refresh
 const unsigned long FIRST_DRAW_DELAY_MS = 10 * 1000UL;
 
+// Test mode (UI_DEMO_MODE in platformio.ini): how long each page stays on screen
+const unsigned long DEMO_PAGE_MS = 20 * 1000UL;
+
 // ---------- Global objects ----------
 
 ThinkInk_750_Tricolor_AABMFGNR display(EPD_DC, EPD_RESET, EPD_CS, SRAM_CS, EPD_BUSY);
@@ -82,6 +85,7 @@ void readSensor();
 void updateDisplay();
 void handleInput();
 void updateWeather(bool force);
+void showPagesInTurn();
 
 // ---------- Setup ----------
 
@@ -101,11 +105,16 @@ void setup() {
 // ---------- Main loop ----------
 
 void loop() {
+#ifndef UI_DEMO_MODE
     handleInput();
+#endif
     updateTime();
     readSensor();
     updateWeather(ui.takeRefreshRequest());
     updateDisplay();
+#ifdef UI_DEMO_MODE
+    showPagesInTurn();
+#endif
 
     delay(50);
 }
@@ -283,6 +292,30 @@ void handleInput() {
     }
 
     wasPressed = pressed;
+}
+
+// Test mode: switch to the next page every DEMO_PAGE_MS, forever.
+// Called right after updateDisplay(), so the timer starts once the
+// slow E-Ink refresh has finished and every page is visible for the full time.
+void showPagesInTurn() {
+    static bool pageJustChanged = true;  // Home is the first page drawn
+    static unsigned long pageShownAt = 0;
+
+    if (millis() < FIRST_DRAW_DELAY_MS) {
+        return;
+    }
+
+    if (pageJustChanged) {
+        pageShownAt = millis();
+        pageJustChanged = false;
+        return;
+    }
+
+    if (millis() - pageShownAt >= DEMO_PAGE_MS) {
+        Serial.println("Demo: next page");
+        ui.showNextPage();
+        pageJustChanged = true;
+    }
 }
 
 void updateWeather(bool force) {

@@ -89,6 +89,21 @@ void UI::enterSleep() {
     }
 }
 
+void UI::showNextPage() {
+    // Add new pages here so the test mode shows them too
+    switch (currentPage) {
+        case HOME:
+            openPage(MENU);
+            break;
+        case MENU:
+            openPage(SLEEP);
+            break;
+        case SLEEP:
+            openPage(HOME);
+            break;
+    }
+}
+
 bool UI::wakeUp() {
     if (currentPage != SLEEP) {
         return false;
