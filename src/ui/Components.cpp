@@ -112,17 +112,20 @@ void drawWifiIcon(Adafruit_GFX& gfx, int16_t cx, int16_t bottomY, bool connected
     }
 }
 
-void drawCloudIcon(Adafruit_GFX& gfx, int16_t x, int16_t y) {
+void drawCloudIcon(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t width) {
+    // Shape is designed 142 px wide, s() scales it to the requested width
+    auto s = [width](int16_t value) { return (int16_t)(value * width / 142); };
+
     // Outline = filled shapes in the text color, then the same shapes in the background color, 3 px smaller
     const int16_t stroke = 3;
     for (int pass = 0; pass < 2; pass++) {
         uint16_t color = (pass == 0) ? COLOR_FG : COLOR_BG;
         int16_t inset = (pass == 0) ? 0 : stroke;
 
-        gfx.fillCircle(x + 32, y + 52, 31 - inset, color);   // Left bump
-        gfx.fillCircle(x + 79, y + 40, 40 - inset, color);   // Big top bump
-        gfx.fillCircle(x + 110, y + 52, 31 - inset, color);  // Right bump
-        gfx.fillRect(x + 32, y + 52, 78, 31 - inset, color); // Flat bottom
+        gfx.fillCircle(x + s(32), y + s(52), s(31) - inset, color);       // Left bump
+        gfx.fillCircle(x + s(79), y + s(40), s(40) - inset, color);       // Big top bump
+        gfx.fillCircle(x + s(110), y + s(52), s(31) - inset, color);      // Right bump
+        gfx.fillRect(x + s(32), y + s(52), s(78), s(31) - inset, color);  // Flat bottom
     }
 }
 
