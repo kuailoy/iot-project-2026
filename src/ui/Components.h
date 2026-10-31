@@ -55,7 +55,8 @@ void drawThickArc(Adafruit_GFX& gfx, int16_t cx, int16_t cy, int16_t radius,
 void drawBatteryIcon(Adafruit_GFX& gfx, int16_t x, int16_t y, int percent); // 41x20
 void drawWifiIcon(Adafruit_GFX& gfx, int16_t cx, int16_t bottomY,
                   bool connected);                                      // 36x28, centered on cx
-void drawCloudIcon(Adafruit_GFX& gfx, int16_t x, int16_t y);        // 142x84
+void drawCloudIcon(Adafruit_GFX& gfx, int16_t x, int16_t y,
+                   int16_t width = 142);                             // 142x84 at default width
 void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y);     // 46x50
 
 // Clock, date, status icons and the line below them
