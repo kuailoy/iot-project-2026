@@ -18,6 +18,9 @@
 //  D4  (SDA)     ->  STEMMA QT: SCD-41 + rotary encoder (daisy-chained)
 //  D5  (SCL)     ->  STEMMA QT: SCD-41 + rotary encoder
 //
+//  D0            ->  TTP223 touch button SIG (VCC -> 3V3, GND -> GND)
+//                    D0 can also wake the ESP32-S3 from deep sleep
+//
 // The breakout's 32KB SRAM is too small for an 800x480 tri-color
 // frame (2 x 48KB), so the ESP32-S3's own RAM is used instead
 // and the SRCS pin is left unconnected.
@@ -27,6 +30,9 @@
 #define EPD_RESET D3
 #define EPD_BUSY  D6
 #define SRAM_CS   -1
+
+// Touch button: HIGH while touched (TTP223 default, A/B jumpers open)
+#define TOUCH_PIN D0
 
 // I2C addresses
 #define ENCODER_I2C_ADDR 0x36

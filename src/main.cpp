@@ -6,6 +6,8 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <time.h>
+#include <memory>
+#include <new>
 
 // Display: E-Ink
 #include <Adafruit_GFX.h>
@@ -25,6 +27,8 @@
 #include "pins.h"
 #include "app/AppData.h"
 #include "services/WeatherService.h"
+#include "services/CalendarService.h"
+#include "app/DateUtil.h"
 #include "ui/UI.h"
 #include "display/EinkDisplay.h"
 #include "display/EinkBenchmark.h"
@@ -51,6 +55,13 @@ const float LONGITUDE = 27.68;
 
 const unsigned long WEATHER_INTERVAL_MS = 15 * 60 * 1000UL;
 const unsigned long WEATHER_RETRY_MS = 60 * 1000UL;
+const unsigned long CALENDAR_INTERVAL_MS = 30 * 60 * 1000UL;
+const unsigned long CALENDAR_RETRY_MS = 2 * 60 * 1000UL;
+
+// Calendar feed address from .env.local (tools/load_env.py)
+#ifndef CALENDAR_ICS_URL
+#define CALENDAR_ICS_URL ""
+#endif
 const unsigned long SENSOR_INTERVAL_MS = 30 * 1000UL;
 const unsigned long LONG_PRESS_MS = 800;
 const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
@@ -73,6 +84,9 @@ Adafruit_seesaw rotary;
 AppData appData;
 UI ui;
 
+// Set by the touch interrupt, so a tap during a slow E-Ink refresh is not lost
+volatile bool touchPending = false;
+
 bool sensorFound = false;
 bool encoderFound = false;
 
@@ -83,6 +97,7 @@ void initI2C();
 void initDisplay();
 void initSensor();
 void initEncoder();
+void initTouch();
 void initWiFi();
 void initTime();
 
@@ -91,6 +106,7 @@ void readSensor();
 void updateDisplay();
 void handleInput();
 void updateWeather(bool force);
+void updateCalendar(bool force);
 void showPagesInTurn();
 
 // ---------- Setup ----------
@@ -113,6 +129,7 @@ void setup() {
 
     initSensor();
     initEncoder();
+    initTouch();
     initWiFi();
     initTime();
 }
@@ -127,10 +144,12 @@ void loop() {
 #endif
     updateTime();
     readSensor();
-    updateWeather(ui.takeRefreshRequest());
+    bool refresh = ui.takeRefreshRequest();
+    updateWeather(refresh);
+    updateCalendar(refresh);
     updateDisplay();
 
-    delay(50);
+    delay(10);
 }
 
 // ---------- Initialization ----------
@@ -175,6 +194,17 @@ void initEncoder() {
     rotary.pinMode(ENCODER_BUTTON_PIN, INPUT_PULLUP);
     rotary.getEncoderDelta();  // Clear any movement since power-on
     Serial.println("Rotary encoder found");
+}
+
+void IRAM_ATTR onTouchInterrupt() {
+    touchPending = true;
+}
+
+void initTouch() {
+    // Pull-down keeps the pin LOW if the module is not connected
+    pinMode(TOUCH_PIN, INPUT_PULLDOWN);
+    attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), onTouchInterrupt, RISING);
+    Serial.println("Touch button ready");
 }
 
 void initWiFi() {
@@ -271,14 +301,23 @@ void updateDisplay() {
 
 void handleInput() {
     static unsigned long lastInput = 0;
+    static bool touchSeen = false;  // The touch module can't be detected, only used
 
-    // Without the encoder there is no way to wake up, so never sleep
-    if (!encoderFound) {
-        return;
+    if (touchPending) {
+        touchPending = false;
+        touchSeen = true;
+        lastInput = millis();
+        ui.onTouch();
     }
 
-    if (millis() - lastInput >= SLEEP_AFTER_MS) {
+    // Sleep only if something can wake the screen up again
+    bool canWake = encoderFound || touchSeen;
+    if (canWake && millis() - lastInput >= SLEEP_AFTER_MS) {
         ui.enterSleep();
+    }
+
+    if (!encoderFound) {
+        return;
     }
 
     int32_t steps = rotary.getEncoderDelta();
@@ -343,6 +382,11 @@ void updateWeather(bool force) {
         return;
     }
 
+    // Downloads block for a moment: wait while the controls are in use
+    if (!force && ui.inUse()) {
+        return;
+    }
+
     unsigned long interval = appData.weatherValid ? WEATHER_INTERVAL_MS : WEATHER_RETRY_MS;
     if (!force && everAttempted && millis() - lastAttempt < interval) {
         return;
@@ -380,6 +424,87 @@ void updateWeather(bool force) {
     appData.outdoorTemp = temperature;
     appData.weatherCode = code;
     appData.weatherValid = true;
+
+    if (changed || force) {
+        ui.requestRedraw();
+    }
+}
+
+static bool sameEvents(const CalendarEvent* a, const CalendarEvent* b, int count) {
+    for (int i = 0; i < count; i++) {
+        if (a[i].day != b[i].day || a[i].startMin != b[i].startMin || a[i].endMin != b[i].endMin ||
+            a[i].allDay != b[i].allDay || strcmp(a[i].title, b[i].title) != 0 ||
+            strcmp(a[i].location, b[i].location) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void updateCalendar(bool force) {
+    static unsigned long lastAttempt = 0;
+    static bool everAttempted = false;
+    static bool warnedNoUrl = false;
+
+    // Needs the date to know which days to load
+    if (WiFi.status() != WL_CONNECTED || !appData.timeValid) {
+        return;
+    }
+
+    // Downloads block for a moment: wait while the controls are in use
+    if (!force && ui.inUse()) {
+        return;
+    }
+    if (strlen(CALENDAR_ICS_URL) == 0) {
+        if (!warnedNoUrl) {
+            Serial.println("Calendar skipped: set CALENDAR_ICS_URL in .env.local");
+            warnedNoUrl = true;
+        }
+        return;
+    }
+
+    unsigned long interval = appData.calendarValid ? CALENDAR_INTERVAL_MS : CALENDAR_RETRY_MS;
+    if (!force && everAttempted && millis() - lastAttempt < interval) {
+        return;
+    }
+    lastAttempt = millis();
+    everAttempted = true;
+
+    // From this week's Monday (the calendar page shows this week) to
+    // 8 weeks ahead (for the next event on Home and in the menu)
+    int32_t today = DateUtil::dayOf(appData.now);
+    int32_t firstDay = today - DateUtil::weekday(today);
+    int32_t lastDay = today + CALENDAR_DAYS_AHEAD;
+
+    // Download into a temporary list, so a failed update keeps the old events
+    std::unique_ptr<CalendarEvent[]> events(new (std::nothrow) CalendarEvent[MAX_CALENDAR_EVENTS]);
+    if (!events) {
+        Serial.println("Calendar: not enough RAM");
+        return;
+    }
+
+    String error;
+    int32_t completeUntil = lastDay;
+    int count = fetchCalendar(CALENDAR_ICS_URL, firstDay, lastDay, events.get(), MAX_CALENDAR_EVENTS,
+                              completeUntil, error);
+    if (count < 0) {
+        Serial.printf("Calendar request failed: %s\n", error.c_str());
+        return;
+    }
+
+    // Days after completeUntil may be missing events: treat them as unknown
+    lastDay = completeUntil;
+    bool changed = !appData.calendarValid || count != appData.eventCount ||
+                   firstDay != appData.calendarFirstDay || lastDay != appData.calendarLastDay ||
+                   !sameEvents(events.get(), appData.events, count);
+
+    for (int i = 0; i < count; i++) {
+        appData.events[i] = events[i];
+    }
+    appData.eventCount = count;
+    appData.calendarFirstDay = firstDay;
+    appData.calendarLastDay = lastDay;
+    appData.calendarValid = true;
 
     if (changed || force) {
         ui.requestRedraw();

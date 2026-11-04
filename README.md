@@ -61,6 +61,25 @@ When a task is completed, close the related Issue.
 
 Check [git quick reference](/docs/git-quick-reference.md)
 
+## Calendar
+
+The device reads any calendar that has an iCal (`.ics` / `webcal://`) link: Tuudo, Google, Outlook, Apple.
+
+1. Get the link. Tuudo: the calendar sync link. Google: Settings → your calendar → "Secret address in iCal format".
+2. Put it in `.env.local` (never in the code, anyone with the link can read the calendar):
+
+   ```
+   CALENDAR_ICS_URL="webcal://cal.tuudo.fi/?t=..."
+   ```
+
+3. Build and flash. The calendar is downloaded every 30 minutes, and when you hold the knob on the Home page.
+
+Open it with the touch button, or from the menu → Calendar. It shows today's events; turn the knob for the next or previous day. Press opens the menu, hold goes back to Home.
+
+The parser (`src/services/CalendarService.cpp`) keeps events from this week's Monday to 8 weeks ahead (at most 200); the weeks after this one are used for the next event on Home.
+It handles recurring events, excluded dates, moved or cancelled occurrences and all-day events.
+Times with a time zone are read as Finnish time, and titles are cut before course codes ("IoT Project 1 IT24SP (IT00BD93-3002)/ ..." becomes "IoT Project 1 IT24SP").
+
 ## E-Ink display driver
 
 Panel: ZJY800480-075AABMFGN-R (7.5", 800×480, black/white/red, UC8179 controller).
@@ -74,6 +93,7 @@ Set the flags in `platformio.ini`, then flash as usual:
 | Flag | Values |
 | --- | --- |
 | `EPD_MODE` | `0` stock black/white/red (~29 s) · `1` black/white with the panel's own waveform · `2` black/white with our fast waveforms (default) |
+| `EPD_WAVEFORM` | Mode 2: `0` normal waveforms, `1` fast set (~40% quicker, fainter, more ghosting) |
 | `EPD_FRAME_RATE` | `50` (default), `70`, `100`, … Every waveform gets shorter at a higher rate, but contrast may drop |
 | `EPD_FORCE_TEMP` | Modes 0/1: temperature in °C used to pick the panel's waveform, `-128` = off |
 | `EPD_KEEP_POWER_MS` | Keep the booster on for quick follow-up updates, `0` = power off after every refresh |
@@ -89,7 +109,7 @@ All waveforms are in `src/display/EinkLuts.h` as data: a level and a frame count
 Frames are 20 ms at 50 Hz.
 
 - Changed pixels look grey, or ghosts stay: make the phases longer.
-- It's too slow: make them shorter, or raise `EPD_FRAME_RATE`.
+- It's too slow: switch to the fast set (`EPD_WAVEFORM=1`), make the phases shorter, or raise `EPD_FRAME_RATE`.
 - The build fails if a waveform is not DC-balanced (it would damage the panel over time) or if the six LUTs of one set have different timing.
 
 The `PARTIAL` waveform comes from GxEPD2 (`GxEPD2_750_T7`), which is tuned for a black/white panel.

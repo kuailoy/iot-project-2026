@@ -43,6 +43,12 @@
 #define EPD_VCOM 0x26
 #endif
 
+// Mode 2: which waveform set from EinkLuts.h. 0 = normal, 1 = fast
+// (shorter phases, ~40% quicker, fainter and more ghosting)
+#ifndef EPD_WAVEFORM
+#define EPD_WAVEFORM 0
+#endif
+
 // SPI clock. The datasheet allows at most 10 MHz (100 ns cycle, p12).
 #ifndef EPD_SPI_HZ
 #define EPD_SPI_HZ 10000000
@@ -106,6 +112,7 @@ constexpr bool einkFrameRateOk(uint32_t hz) {
 static_assert(einkFrameRateOk(EPD_FRAME_RATE), "EPD_FRAME_RATE: not in the PLL table or too fast");
 static_assert(EPD_SPI_HZ <= 10000000, "EPD_SPI_HZ: the controller allows at most 10 MHz");
 static_assert(EPD_MODE >= 0 && EPD_MODE <= 2, "EPD_MODE must be 0, 1 or 2");
+static_assert(EPD_WAVEFORM == 0 || EPD_WAVEFORM == 1, "EPD_WAVEFORM must be 0 or 1");
 
 // ---------- Driver ----------
 
@@ -128,9 +135,19 @@ public:
     bool setConfig(const EinkConfig& config);
     const EinkConfig& config() const { return cfg; }
 
-    // Update the screen from the buffer. Picks the waveform itself:
-    // mode 2 uses PARTIAL, and FULL_CLEAN at start and every EPD_CLEAN_EVERY updates.
+    // Update the screen from the buffer and wait until it is done. Picks the
+    // waveform itself: mode 2 uses PARTIAL, and FULL_CLEAN at start and every
+    // EPD_CLEAN_EVERY updates.
     bool refresh();
+
+    // Same, but returns as soon as the panel has started (after ~0.1-0.3 s),
+    // so the app keeps reading input. Call tick() from loop() to finish it.
+    // interactive = someone is using the controls: no FULL_CLEAN now.
+    bool startRefresh(bool interactive);
+
+    // True while the panel is still updating; don't start another refresh yet.
+    // Drawing into the buffer is fine, the image is already in the panel.
+    bool isBusy() const { return refreshing; }
 
     // Whole-screen refresh. The LUT only matters in mode 2.
     bool fullRefresh(EinkLutId lut);
@@ -145,15 +162,17 @@ public:
     // Power off and deep sleep now
     void sleep();
 
-    // Call from loop(): powers down once EPD_KEEP_POWER_MS have passed
+    // Call from loop(): finishes a started refresh, and powers down once
+    // EPD_KEEP_POWER_MS have passed
     void tick();
 
     const EinkTiming& lastTiming() const { return timing; }
 
+    // The set picked by EPD_WAVEFORM
     static const EinkLutSet& lutSet(EinkLutId id);
     static const char* modeName(EinkMode mode);
 
-    // Print the DC imbalance of every LUT (0 = balanced)
+    // Print the DC imbalance of every LUT in both sets (0 = balanced)
     static void printLutBalance();
 
 private:
@@ -177,7 +196,18 @@ private:
     uint16_t updatesSinceClean = 0;
     unsigned long lastActive = 0;
 
+    // Refresh in progress (startRefresh)
+    bool refreshing = false;
+    unsigned long refreshStart = 0;
+    unsigned long drfStart = 0;
+    EinkLutId refreshLut = EinkLutId::PARTIAL;
+    Window refreshWindow = {0, 0, 0, 0};
+    bool refreshHasWindow = false;
+
+    EinkLutId chooseLut(bool interactive) const;
     bool runRefresh(EinkLutId lut, const Window* window);
+    bool beginRefresh(EinkLutId lut, const Window* window);
+    bool pollRefresh();
     void configure(EinkLutId lut);
     void uploadLuts(EinkLutId lut);
     void sendFrame(uint8_t cmd, const uint8_t* frame, const Window* window);

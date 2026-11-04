@@ -7,6 +7,8 @@
 #include <Adafruit_GFX.h>
 
 #include "Components.h"
+#include "../app/DateUtil.h"
+#include "pages/CalendarPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
 #include "pages/SleepPage.h"
@@ -30,6 +32,7 @@ static AppData demoData() {
     AppData data;
 
     data.timeValid = true;
+    data.now.tm_year = 126;  // 2026
     data.now.tm_hour = 10;
     data.now.tm_min = 22;
     data.now.tm_mday = 5;
@@ -44,9 +47,42 @@ static AppData demoData() {
     data.indoorTemp = 22;
     data.humidity = 45;
 
-    data.eventValid = true;
-    strcpy(data.eventTime, "10:30");
-    strcpy(data.eventTitle, "Project meeting");
+    // Calendar events from the Figma designs
+    struct Sample {
+        int day, hour, min, length;
+        const char* title;
+        const char* location;
+    };
+    static const Sample samples[] = {
+        {5, 9, 0, 90, "Finnish class", "Mic-J430"},
+        {5, 10, 30, 60, "Project meeting", ""},
+        {5, 12, 15, 45, "Lunch with team", "Microkatu 1"},
+        {5, 14, 0, 120, "Communication Skills for Engineering Ex", "Mic-E4004"},
+        {5, 16, 30, 60, "Gym", ""},
+        {7, 9, 0, 90, "Finnish class", "Mic-J430"},
+        {7, 13, 0, 60, "Sync", ""},
+        {9, 9, 0, 90, "Finnish class", "Mic-J430"},
+        {9, 15, 0, 60, "Report", ""},
+        {10, 11, 0, 120, "Market", "Kauppatori"},
+        {14, 9, 0, 90, "Finnish class", "Mic-J430"},
+        {19, 10, 0, 60, "Dentist", ""},
+        {21, 9, 0, 90, "Finnish class", "Mic-J430"},
+        {27, 18, 0, 60, "Concert", ""},
+        {28, 9, 0, 90, "Finnish class", "Mic-J430"},
+        {30, 0, 0, 0, "Trip to Aanekoski", ""},
+    };
+    for (const Sample& e : samples) {
+        CalendarEvent& ev = data.events[data.eventCount++];
+        ev.day = DateUtil::daysFromCivil(2026, 10, e.day);
+        ev.allDay = e.length == 0;
+        ev.startMin = e.hour * 60 + e.min;
+        ev.endMin = ev.allDay ? 1440 : ev.startMin + e.length;
+        strcpy(ev.title, e.title);
+        strcpy(ev.location, e.location);
+    }
+    data.calendarValid = true;
+    data.calendarFirstDay = DateUtil::daysFromCivil(2026, 9, 28);
+    data.calendarLastDay = DateUtil::daysFromCivil(2026, 11, 30);
 
     data.wifiConnected = true;
     return data;
@@ -81,6 +117,20 @@ int main() {
     sleep.draw(canvas, night);
     savePbm(canvas, "out/sleep.pbm");
 
-    printf("Saved out/home.pbm, out/home-empty.pbm, out/menu.pbm and out/sleep.pbm\n");
+    // Calendar: today (busy), then one turn forward (Tuesday, free)
+    AppData calendarData = data;
+    calendarData.now.tm_min = 35;
+    CalendarPage calendar;
+    calendar.open();
+    canvas.fillScreen(COLOR_BG);
+    calendar.draw(canvas, calendarData);
+    savePbm(canvas, "out/calendar-today.pbm");
+
+    calendar.move(calendarData, 1);
+    canvas.fillScreen(COLOR_BG);
+    calendar.draw(canvas, calendarData);
+    savePbm(canvas, "out/calendar-free.pbm");
+
+    printf("Saved home, home-empty, menu, sleep, calendar-today and calendar-free (.pbm) in out/\n");
     return 0;
 }

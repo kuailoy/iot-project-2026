@@ -2,6 +2,7 @@
 
 #include "../display/EinkDisplay.h"
 
+#include "pages/CalendarPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
 #include "pages/SleepPage.h"
@@ -19,8 +20,17 @@ public:
     void onPress();
     void onLongPress();
 
-    // Call from updateDisplay(), does nothing if no redraw is needed
+    // Touch button: wakes up from sleep, otherwise opens the calendar
+    void onTouch();
+
+    // Call from updateDisplay(), does nothing if no redraw is needed.
+    // Starts the E-Ink update and returns; while the panel is busy, new input
+    // is collected and the newest state is drawn when it is free again.
     void update();
+
+    // True if a control was used in the last INPUT_ACTIVE_MS; slow work
+    // (downloads, the deep-clean refresh) waits until then
+    bool inUse() const;
 
     // Force a full redraw, e.g. after new sensor or weather data
     void requestRedraw() { redrawNeeded = true; }
@@ -40,6 +50,7 @@ private:
     enum Page {
         HOME,
         MENU,
+        CALENDAR,
         SLEEP
     };
 
@@ -49,9 +60,15 @@ private:
     bool redrawNeeded = true;
     bool refreshRequested = false;
 
+    static constexpr unsigned long INPUT_ACTIVE_MS = 15000;
+    unsigned long lastInputMs = 0;
+    bool anyInput = false;
+    void noteInput();
+
     HomePage homePage;
     MenuPage menuPage;
     SleepPage sleepPage;
+    CalendarPage calendarPage;
 
     // Returns true if the input was used to wake up
     bool wakeUp();

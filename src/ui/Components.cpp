@@ -1,6 +1,8 @@
 #include "Components.h"
 
 #include <ctype.h>
+#include <stdio.h>
+#include <string.h>
 
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
@@ -50,6 +52,34 @@ void drawTextCentered(Adafruit_GFX& gfx, int16_t centerX, int16_t y, const char*
     int16_t inkStart;
     uint16_t width = textWidth(gfx, text, font, &inkStart);
     drawText(gfx, centerX - width / 2 - inkStart, y, text, font, color);
+}
+
+int16_t measureText(Adafruit_GFX& gfx, const char* text, const GFXfont* font) {
+    int16_t inkStart;
+    return textWidth(gfx, text, font, &inkStart);
+}
+
+void fitText(Adafruit_GFX& gfx, char* text, int16_t maxWidth, const GFXfont* font) {
+    int16_t inkStart;
+    if (textWidth(gfx, text, font, &inkStart) <= maxWidth) {
+        return;
+    }
+    // Replace the end with "..", one more character each time until it fits.
+    // The result is never longer than the original, so it fits the buffer.
+    size_t length = strlen(text);
+    while (length >= 2) {
+        size_t keep = length - 2;
+        while (keep > 0 && text[keep - 1] == ' ') {
+            keep--;
+        }
+        text[keep] = '.';
+        text[keep + 1] = '.';
+        text[keep + 2] = '\0';
+        if (keep == 0 || textWidth(gfx, text, font, &inkStart) <= maxWidth) {
+            return;
+        }
+        length = keep + 1;
+    }
 }
 
 void drawTemperature(Adafruit_GFX& gfx, int16_t x, int16_t y, const char* value,
@@ -126,7 +156,7 @@ void drawCloudIcon(Adafruit_GFX& gfx, int16_t x, int16_t y) {
     }
 }
 
-void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y) {
+void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y, bool check) {
     const int16_t top = y + 6;
 
     for (int16_t i = 0; i < 3; i++) {
@@ -137,6 +167,15 @@ void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y) {
     // Binder rings
     gfx.fillRect(x + 11, y, 3, 12, COLOR_FG);
     gfx.fillRect(x + 32, y, 3, 12, COLOR_FG);
+
+    // Check mark, 3 px thick
+    if (check) {
+        for (int16_t i = 0; i < 3; i++) {
+            gfx.drawLine(x + 13, y + 32 + i, x + 20, y + 39 + i, COLOR_FG);
+            gfx.drawLine(x + 20, y + 39 + i, x + 33, y + 26 + i, COLOR_FG);
+        }
+    }
+
 }
 
 // ---------- Screen sections ----------

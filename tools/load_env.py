@@ -5,6 +5,14 @@ from pathlib import Path
 
 Import("env")
 
+SETTING_NAMES = (
+    "WIFI_SSID",
+    "WIFI_PASSWORD",
+    "TIME_API_KEY",
+    "WEATHER_API_KEY",
+    "CALENDAR_ICS_URL",
+)
+
 if env.IsIntegrationDump():
     Return()
 
@@ -26,7 +34,7 @@ def read_env_file(path):
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
-        if key not in ("WIFI_SSID", "WIFI_PASSWORD", "TIME_API_KEY", "WEATHER_API_KEY"):
+        if key not in SETTING_NAMES:
             continue
 
         if value.startswith(("'", '"')):
@@ -45,17 +53,11 @@ project_dir = Path(env.subst("$PROJECT_DIR"))
 local_values = read_env_file(project_dir / ".env.local")
 
 env.Append(
-    CPPDEFINES=[
-        ("WIFI_SSID", env.StringifyMacro(local_values.get("WIFI_SSID", ""))),
-        ("WIFI_PASSWORD", env.StringifyMacro(local_values.get("WIFI_PASSWORD", ""))),
-        ("TIME_API_KEY", env.StringifyMacro(local_values.get("TIME_API_KEY", ""))),
-        ("WEATHER_API_KEY", env.StringifyMacro(local_values.get("WEATHER_API_KEY", ""))),
-    ]
+    CPPDEFINES=[(name, env.StringifyMacro(local_values.get(name, ""))) for name in SETTING_NAMES]
 )
 
-setting_names = ("WIFI_SSID", "WIFI_PASSWORD", "TIME_API_KEY", "WEATHER_API_KEY")
-loaded_names = [name for name in setting_names if local_values.get(name)]
-missing_names = [name for name in setting_names if not local_values.get(name)]
+loaded_names = [name for name in SETTING_NAMES if local_values.get(name)]
+missing_names = [name for name in SETTING_NAMES if not local_values.get(name)]
 
 if loaded_names:
     print("Loaded from .env.local: " + ", ".join(loaded_names))
