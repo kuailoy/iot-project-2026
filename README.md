@@ -61,18 +61,50 @@ When a task is completed, close the related Issue.
 
 Check [git quick reference](/docs/git-quick-reference.md)
 
+## Wi-Fi setup
+
+On the first start (no home Wi-Fi saved) the screen shows a QR code and three steps:
+
+1. Scan the QR code with the phone camera: the phone joins the device's own Wi-Fi, `Desk-Setup-XXXX`
+   (its password is on the screen too, made once on the first start).
+2. The phone opens the setup page by itself. If it doesn't, open `http://192.168.4.1`.
+3. Choose the home Wi-Fi, type its password, then "Connect".
+   The device tries the network; if it works it is saved and the device goes to the Home page,
+   otherwise the page and the screen say what went wrong.
+
+This page is only for the first setup (or when the saved Wi-Fi is gone: menu → Settings → press the knob).
+Everything else is on the settings page below.
+
+## Settings page (desk.local)
+
+With the phone on the same Wi-Fi, open `http://desk.local` (or the IP / QR code from menu → Settings):
+
+- **Widgets** of the second home page (see below)
+- **Weather city**: search by name (OpenWeatherMap geocoding, uses `WEATHER_API_KEY`) and pick one of the matches
+- **Calendar link**
+- **Wi-Fi**: switch to another network. If the new one doesn't work within ~20 s, the display goes back to the old one.
+
+All settings are kept in the ESP32's flash (`src/app/Settings.cpp`), not in the code.
+Only 2.4 GHz networks work; WPA2-Enterprise networks such as eduroam are not supported.
+Code: `src/services/SetupPortal.cpp` (setup Wi-Fi, web page), `src/ui/pages/SetupPage.cpp` (screen).
+
+## Second home page (widgets)
+
+The touch button switches between the normal Home page and a second page made of widgets.
+Its layout is edited on the settings page (`http://desk.local` → Widgets).
+The editor works like a phone home screen: drag widgets to reorder them, tap one to change its size (Small 1×1, Medium 2×1, Large 2×2, Wide 4×1), move it or remove it, and add new ones.
+Widgets: clock, date, weather, indoor (temperature, humidity, CO2), CO2, next event, today's events.
+The screen is a 4 × 3 grid; widgets are placed in order in the first free spot, so the ones that don't fit are shown on the phone as "doesn't fit".
+Code: `src/app/WidgetLayout.*` (layout), `src/ui/pages/WidgetPage.cpp` (drawing), `handleWidgets()` in `src/services/SetupPortal.cpp` (editor).
+
 ## Calendar
 
 The device reads any calendar that has an iCal (`.ics` / `webcal://`) link: Tuudo, Google, Outlook, Apple.
 
 1. Get the link. Tuudo: the calendar sync link. Google: Settings → your calendar → "Secret address in iCal format".
-2. Put it in `.env.local` (never in the code, anyone with the link can read the calendar):
-
-   ```
-   CALENDAR_ICS_URL="webcal://cal.tuudo.fi/?t=..."
-   ```
-
-3. Build and flash. The calendar is downloaded every 30 minutes, and when you hold the knob on the Home page.
+2. Paste it on the settings page (`desk.local`). Keep it private: anyone with the link can read the calendar.
+   `CALENDAR_ICS_URL` in `.env.local` is only used until a link is saved there.
+3. The calendar is downloaded every 30 minutes, and when you hold the knob on the Home page.
 
 Open it with the touch button, or from the menu → Calendar. It shows today's events; turn the knob for the next or previous day. Press opens the menu, hold goes back to Home.
 

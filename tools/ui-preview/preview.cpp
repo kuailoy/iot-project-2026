@@ -11,6 +11,9 @@
 #include "pages/CalendarPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/SettingsPage.h"
+#include "pages/SetupPage.h"
+#include "pages/WidgetPage.h"
 #include "pages/SleepPage.h"
 
 static bool savePbm(GFXcanvas1& canvas, const char* path) {
@@ -46,6 +49,7 @@ static AppData demoData() {
     data.sensorValid = true;
     data.indoorTemp = 22;
     data.humidity = 45;
+    data.co2 = 640;
 
     // Calendar events from the Figma designs
     struct Sample {
@@ -131,6 +135,69 @@ int main() {
     calendar.draw(canvas, calendarData);
     savePbm(canvas, "out/calendar-free.pbm");
 
-    printf("Saved home, home-empty, menu, sleep, calendar-today and calendar-free (.pbm) in out/\n");
+    // Setup page. The QR code here is only a look-alike: the real one is
+    // made on the device (esp_qrcode), which doesn't build on a PC.
+    AppData setup;
+    setup.setupActive = true;
+    strcpy(setup.setupNetwork, "Desk-Setup-4F2A");
+    strcpy(setup.setupPassword, "k7mq2xpa");
+    strcpy(setup.setupStatus, "Waiting for a phone to connect...");
+    const int qr = 29;
+    setup.qrSize = qr;
+    unsigned seed = 7;
+    for (int y = 0; y < qr; y++) {
+        for (int x = 0; x < qr; x++) {
+            bool dark;
+            int fx = x < 7 ? x : x >= qr - 7 ? x - (qr - 7) : -1;
+            int fy = y < 7 ? y : y >= qr - 7 ? y - (qr - 7) : -1;
+            if (fx >= 0 && fy >= 0 && !(x >= qr - 7 && y >= qr - 7)) {
+                // Finder pattern: ring and 3x3 center
+                dark = fx == 0 || fx == 6 || fy == 0 || fy == 6 || (fx >= 2 && fx <= 4 && fy >= 2 && fy <= 4);
+            } else {
+                seed = seed * 1103515245 + 12345;
+                dark = (seed >> 16) & 1;
+            }
+            if (dark) {
+                int i = y * qr + x;
+                setup.qrCode[i / 8] |= 0x80 >> (i % 8);
+            }
+        }
+    }
+    SetupPage setupPage;
+    canvas.fillScreen(COLOR_BG);
+    setupPage.draw(canvas, setup);
+    savePbm(canvas, "out/setup.pbm");
+
+    // Settings page, with the same look-alike QR code
+    AppData settingsData = data;
+    strcpy(settingsData.deviceIp, "192.168.1.23");
+    strcpy(settingsData.wifiName, "DNA-WIFI-8C21");
+    settingsData.qrSize = setup.qrSize;
+    memcpy(settingsData.qrCode, setup.qrCode, sizeof(settingsData.qrCode));
+    SettingsPage settingsPage;
+    canvas.fillScreen(COLOR_BG);
+    settingsPage.draw(canvas, settingsData);
+    savePbm(canvas, "out/settings.pbm");
+
+    // Second home page: the default layout, and one with every widget
+    WidgetPage widgetPage;
+    AppData widgetData = calendarData;
+    widgetData.widgetCount = layoutWidgets(DEFAULT_WIDGETS, widgetData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData);
+    savePbm(canvas, "out/home2.pbm");
+
+    widgetData.widgetCount =
+        layoutWidgets("clock:L,agenda:L,date:S,co2:S,weather:M,next:M", widgetData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData);
+    savePbm(canvas, "out/home2-all.pbm");
+
+    widgetData.widgetCount = layoutWidgets("indoor:W,clock:M,weather:S,date:S,next:W", widgetData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData);
+    savePbm(canvas, "out/home2-wide.pbm");
+
+    printf("Saved all pages (.pbm) in out/\n");
     return 0;
 }

@@ -5,7 +5,10 @@
 #include "pages/CalendarPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/SettingsPage.h"
+#include "pages/SetupPage.h"
 #include "pages/SleepPage.h"
+#include "pages/WidgetPage.h"
 
 // Keeps track of the current page, handles encoder input
 // and redraws the E-Ink display only when something changed.
@@ -20,7 +23,8 @@ public:
     void onPress();
     void onLongPress();
 
-    // Touch button: wakes up from sleep, otherwise opens the calendar
+    // Touch button: wakes up from sleep, otherwise switches between the
+    // two home pages (Home and the widget page)
     void onTouch();
 
     // Call from updateDisplay(), does nothing if no redraw is needed.
@@ -38,7 +42,15 @@ public:
     // True once after the user pressed "refresh" on the Home page
     bool takeRefreshRequest();
 
-    // Show the sleep screen, any input wakes up to Home
+    // Wi-Fi setup page (main.cpp runs the SetupPortal behind it)
+    void openSetup();
+    void closeSetup();                   // Back to Home
+    bool takeSetupRequest();             // Press on the Settings page
+    bool takeSettingsOpened();           // Settings page opened: main.cpp fills in the address
+    bool takeSetupRestart();             // Hold on the setup page
+    bool takeSetupCancel();              // Press on the setup page (only if Wi-Fi was set up before)
+
+    // Show the sleep screen, any input wakes up to Home (not during setup)
     void enterSleep();
     bool isAsleep() const { return currentPage == SLEEP; }
 
@@ -49,8 +61,11 @@ public:
 private:
     enum Page {
         HOME,
+        WIDGETS,   // Second home page
         MENU,
         CALENDAR,
+        SETTINGS,
+        SETUP,
         SLEEP
     };
 
@@ -59,6 +74,10 @@ private:
     Page currentPage = HOME;
     bool redrawNeeded = true;
     bool refreshRequested = false;
+    bool setupRequested = false;
+    bool settingsOpened = false;
+    bool setupRestartRequested = false;
+    bool setupCancelRequested = false;
 
     static constexpr unsigned long INPUT_ACTIVE_MS = 15000;
     unsigned long lastInputMs = 0;
@@ -69,6 +88,9 @@ private:
     MenuPage menuPage;
     SleepPage sleepPage;
     CalendarPage calendarPage;
+    SetupPage setupPage;
+    SettingsPage settingsPage;
+    WidgetPage widgetPage;
 
     // Returns true if the input was used to wake up
     bool wakeUp();

@@ -29,17 +29,14 @@
 #include "services/WeatherService.h"
 #include "services/CalendarService.h"
 #include "app/DateUtil.h"
+#include "app/Settings.h"
+#include "services/SetupPortal.h"
 #include "ui/UI.h"
 #include "display/EinkDisplay.h"
 #include "display/EinkBenchmark.h"
 
-// Wi-Fi credentials are injected from .env.local by the PlatformIO pre-script.
-#ifndef WIFI_SSID
-#define WIFI_SSID ""
-#endif
-#ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD ""
-#endif
+// API keys are injected from .env.local by the PlatformIO pre-script.
+// Wi-Fi and the calendar link are set on the setup page (Settings, SetupPortal).
 #ifndef WEATHER_API_KEY
 #define WEATHER_API_KEY ""
 #endif
@@ -49,19 +46,13 @@
 const char* NTP_SERVER = "pool.ntp.org";
 const char* TIME_ZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";  // Finland, with summer time
 
-// Location for the weather forecast (Kuopio)
-const float LATITUDE = 62.89;
-const float LONGITUDE = 27.68;
+// The weather city is chosen on the settings page (desk.local)
 
 const unsigned long WEATHER_INTERVAL_MS = 15 * 60 * 1000UL;
 const unsigned long WEATHER_RETRY_MS = 60 * 1000UL;
 const unsigned long CALENDAR_INTERVAL_MS = 30 * 60 * 1000UL;
 const unsigned long CALENDAR_RETRY_MS = 2 * 60 * 1000UL;
 
-// Calendar feed address from .env.local (tools/load_env.py)
-#ifndef CALENDAR_ICS_URL
-#define CALENDAR_ICS_URL ""
-#endif
 const unsigned long SENSOR_INTERVAL_MS = 30 * 1000UL;
 const unsigned long LONG_PRESS_MS = 800;
 const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
@@ -83,6 +74,9 @@ SensirionI2cScd4x scd4x;
 Adafruit_seesaw rotary;
 AppData appData;
 UI ui;
+Settings settings;      // Home Wi-Fi and calendar link, saved in flash
+SetupPortal portal;     // Wi-Fi setup page, runs when needed
+bool downloadNow = false;  // Fetch weather and calendar on the next loop
 
 // Set by the touch interrupt, so a tap during a slow E-Ink refresh is not lost
 volatile bool touchPending = false;
@@ -108,6 +102,12 @@ void handleInput();
 void updateWeather(bool force);
 void updateCalendar(bool force);
 void showPagesInTurn();
+void connectWiFi(bool wait);
+void startSetup();
+void updateSetup();
+void applyWidgets();
+void applySettingsChanges();
+void fillSettingsPage();
 
 // ---------- Setup ----------
 
@@ -142,9 +142,11 @@ void loop() {
 #else
     handleInput();
 #endif
+    updateSetup();
     updateTime();
     readSensor();
-    bool refresh = ui.takeRefreshRequest();
+    bool refresh = ui.takeRefreshRequest() || downloadNow;
+    downloadNow = false;
     updateWeather(refresh);
     updateCalendar(refresh);
     updateDisplay();
@@ -208,14 +210,29 @@ void initTouch() {
 }
 
 void initWiFi() {
-    if (strlen(WIFI_SSID) == 0) {
-        Serial.println("Wi-Fi skipped: WIFI_SSID is not set in .env.local");
+    SettingsStore::load(settings);
+    applyWidgets();
+    strlcpy(appData.city, settings.cityName.c_str(), sizeof(appData.city));
+    portal.setWeatherKey(WEATHER_API_KEY);
+
+    // First start (or after a reset): no home Wi-Fi yet, show the setup page
+    if (!settings.hasWifi()) {
+        Serial.println("Wi-Fi: not set up yet");
+        startSetup();
         return;
     }
+    connectWiFi(true);
+}
 
-    Serial.printf("Connecting to %s", WIFI_SSID);
+// Connect to the saved home Wi-Fi. wait = block up to 15 s (at start-up)
+void connectWiFi(bool wait) {
+    Serial.printf("Connecting to %s", settings.wifiSsid.c_str());
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(settings.wifiSsid.c_str(), settings.wifiPassword.c_str());
+    if (!wait) {
+        Serial.println();
+        return;  // updateTime() notices when it is connected
+    }
 
     // Give up after 15 s so the device still starts without Wi-Fi
     unsigned long start = millis();
@@ -226,6 +243,116 @@ void initWiFi() {
 
     appData.wifiConnected = (WiFi.status() == WL_CONNECTED);
     Serial.println(appData.wifiConnected ? " connected" : " failed");
+}
+
+// Turn on the setup Wi-Fi and show the setup page with its QR code
+void startSetup() {
+    portal.begin(settings);
+
+    appData.setupActive = true;
+    appData.setupCanCancel = settings.hasWifi();
+    appData.wifiConnected = false;
+    strlcpy(appData.setupNetwork, portal.networkName().c_str(), sizeof(appData.setupNetwork));
+    strlcpy(appData.setupPassword, settings.apPassword.c_str(), sizeof(appData.setupPassword));
+    strlcpy(appData.setupStatus, portal.statusText().c_str(), sizeof(appData.setupStatus));
+    appData.qrSize =
+        makeWifiQrCode(portal.networkName(), settings.apPassword, appData.qrCode, sizeof(appData.qrCode));
+    if (appData.qrSize == 0) {
+        Serial.println("Setup: QR code could not be made");
+    }
+    ui.openSetup();
+}
+
+// Place the saved widgets of the second home page
+void applyWidgets() {
+    appData.widgetCount = layoutWidgets(settings.widgets.c_str(), appData.widgets, MAX_WIDGETS);
+    ui.requestRedraw();
+}
+
+// Address and QR code of the settings web page, for the Settings screen
+void fillSettingsPage() {
+    if (WiFi.status() == WL_CONNECTED) {
+        String ip = WiFi.localIP().toString();
+        strlcpy(appData.deviceIp, ip.c_str(), sizeof(appData.deviceIp));
+        strlcpy(appData.wifiName, settings.wifiSsid.c_str(), sizeof(appData.wifiName));
+        appData.qrSize = makeQrCode("http://" + ip + "/", appData.qrCode, sizeof(appData.qrCode));
+    } else {
+        appData.deviceIp[0] = '\0';
+        appData.qrSize = 0;
+    }
+    ui.requestRedraw();
+}
+
+// Apply what was changed on the settings page (already saved)
+void applySettingsChanges() {
+    if (portal.takeWidgetsChanged()) {
+        applyWidgets();
+    }
+    if (portal.takeCityChanged()) {
+        strlcpy(appData.city, settings.cityName.c_str(), sizeof(appData.city));
+        appData.weatherValid = false;  // The old temperature is from the old city
+        ui.requestRedraw();
+        downloadNow = true;
+    }
+    if (portal.takeCalendarChanged()) {
+        appData.calendarValid = false;  // Old events belong to the old link
+        appData.eventCount = 0;
+        ui.requestRedraw();
+        downloadNow = true;
+    }
+    if (portal.takeWifiChanged()) {
+        strlcpy(appData.wifiName, settings.wifiSsid.c_str(), sizeof(appData.wifiName));
+        downloadNow = true;
+    }
+}
+
+void updateSetup() {
+    if (ui.takeSettingsOpened()) {
+        fillSettingsPage();
+    }
+
+    if (!portal.active()) {
+        if (ui.takeSetupRequest()) {
+            startSetup();  // Press on the Settings screen
+            return;
+        }
+        // Settings pages on the home Wi-Fi (http://desk.local)
+        if (WiFi.status() == WL_CONNECTED && !portal.lanRunning()) {
+            portal.startLan(settings);
+        }
+        portal.loop();
+        applySettingsChanges();
+        return;
+    }
+
+    portal.loop();
+    if (portal.takeChanged()) {
+        strlcpy(appData.setupStatus, portal.statusText().c_str(), sizeof(appData.setupStatus));
+        ui.requestRedraw();
+    }
+
+    if (ui.takeSetupRestart()) {
+        portal.end();
+        startSetup();
+        return;
+    }
+
+    if (ui.takeSetupCancel()) {
+        portal.end();
+        appData.setupActive = false;
+        ui.closeSetup();
+        connectWiFi(false);  // Back to the saved Wi-Fi
+        return;
+    }
+
+    if (portal.finished()) {
+        portal.end();
+        appData.setupActive = false;
+        appData.wifiConnected = WiFi.status() == WL_CONNECTED;
+        ui.closeSetup();
+        downloadNow = true;
+    }
+
 }
 
 void initTime() {
@@ -378,7 +505,7 @@ void updateWeather(bool force) {
     static unsigned long lastAttempt = 0;
     static bool everAttempted = false;
 
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED || portal.active()) {
         return;
     }
 
@@ -396,7 +523,7 @@ void updateWeather(bool force) {
 
     String response;
     String requestError;
-    if (!fetchWeather(LATITUDE, LONGITUDE, WEATHER_API_KEY, response, requestError)) {
+    if (!fetchWeather(settings.cityLat, settings.cityLon, WEATHER_API_KEY, response, requestError)) {
         Serial.printf("Weather request failed: %s\n", requestError.c_str());
         return;
     }
@@ -447,7 +574,7 @@ void updateCalendar(bool force) {
     static bool warnedNoUrl = false;
 
     // Needs the date to know which days to load
-    if (WiFi.status() != WL_CONNECTED || !appData.timeValid) {
+    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active()) {
         return;
     }
 
@@ -455,13 +582,14 @@ void updateCalendar(bool force) {
     if (!force && ui.inUse()) {
         return;
     }
-    if (strlen(CALENDAR_ICS_URL) == 0) {
+    if (settings.calendarUrl.length() == 0) {
         if (!warnedNoUrl) {
-            Serial.println("Calendar skipped: set CALENDAR_ICS_URL in .env.local");
+            Serial.println("Calendar skipped: add the calendar link on the setup page (menu > Settings)");
             warnedNoUrl = true;
         }
         return;
     }
+    warnedNoUrl = false;
 
     unsigned long interval = appData.calendarValid ? CALENDAR_INTERVAL_MS : CALENDAR_RETRY_MS;
     if (!force && everAttempted && millis() - lastAttempt < interval) {
@@ -485,7 +613,7 @@ void updateCalendar(bool force) {
 
     String error;
     int32_t completeUntil = lastDay;
-    int count = fetchCalendar(CALENDAR_ICS_URL, firstDay, lastDay, events.get(), MAX_CALENDAR_EVENTS,
+    int count = fetchCalendar(settings.calendarUrl.c_str(), firstDay, lastDay, events.get(), MAX_CALENDAR_EVENTS,
                               completeUntil, error);
     if (count < 0) {
         Serial.printf("Calendar request failed: %s\n", error.c_str());

@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "WidgetLayout.h"
+
 // One occurrence of a calendar event, already in local time.
 // Recurring events are expanded: every occurrence is its own entry.
 struct CalendarEvent {
@@ -48,6 +50,23 @@ struct AppData {
     int32_t calendarLastDay = 0;     // days outside are unknown, not free
     int eventCount = 0;
     CalendarEvent events[MAX_CALENDAR_EVENTS];  // Sorted by day, then start time
+
+    // ---------- Wi-Fi setup page (SetupPortal) ----------
+    bool setupActive = false;
+    bool setupCanCancel = false;       // A home Wi-Fi was saved before: Press goes back
+    char setupNetwork[24] = "";        // Name of the setup Wi-Fi, "Desk-Setup-4F2A"
+    char setupPassword[16] = "";
+    char setupStatus[64] = "";         // "Waiting for a phone to connect..."
+
+    // ---------- Settings page and second home page ----------
+    char deviceIp[16] = "";            // On the home Wi-Fi, "" when not connected
+    char wifiName[33] = "";
+    int widgetCount = 0;
+    WidgetSlot widgets[MAX_WIDGETS];   // Placed widgets, see WidgetLayout.h
+
+    // QR code shown on the setup or settings page
+    uint8_t qrSize = 0;                       // Modules per side, 0 = no code
+    uint8_t qrCode[(41 * 41 + 7) / 8] = {};   // 1 bit per module, row by row, MSB first
 
     // ---------- Status ----------
     bool wifiConnected = false;

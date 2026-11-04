@@ -42,6 +42,16 @@ void UI::onPress() {
         return;
     }
 
+    if (currentPage == SETUP) {
+        setupCancelRequested = data->setupCanCancel;  // First setup can't be skipped
+        return;
+    }
+    if (currentPage == SETTINGS) {
+        // Not on Wi-Fi: start the Wi-Fi setup (otherwise everything is on desk.local)
+        setupRequested = data->deviceIp[0] == '\0';
+        return;
+    }
+
     // Outside the menu, press opens it; in the menu it opens the selected line
     if (currentPage != MENU) {
         openPage(MENU);
@@ -56,6 +66,10 @@ void UI::onPress() {
             calendarPage.open();  // Today
             openPage(CALENDAR);
             break;
+        case MenuPage::SETTINGS:
+            settingsOpened = true;  // main.cpp fills in the address and QR code
+            openPage(SETTINGS);
+            break;
         default:
             // TODO: Open the other mode pages when they are implemented
             break;
@@ -68,9 +82,11 @@ void UI::onLongPress() {
         return;
     }
 
-    if (currentPage == HOME) {
+    if (currentPage == HOME || currentPage == WIDGETS) {
         // main.cpp fetches new data, then requests a redraw
         refreshRequested = true;
+    } else if (currentPage == SETUP) {
+        setupRestartRequested = true;
     } else {
         openPage(HOME);
     }
@@ -82,9 +98,12 @@ void UI::onTouch() {
         return;
     }
 
-    // Touch always opens the calendar on today
-    calendarPage.open();
-    openPage(CALENDAR);
+    if (currentPage == SETUP) {
+        return;  // Setup stays until it is done or cancelled
+    }
+
+    // Switch between the two home pages; from anywhere else, the widget page
+    openPage(currentPage == WIDGETS ? HOME : WIDGETS);
 }
 
 // ---------- Rendering ----------
@@ -104,11 +123,20 @@ void UI::update() {
         case HOME:
             homePage.draw(*display, *data);
             break;
+        case WIDGETS:
+            widgetPage.draw(*display, *data);
+            break;
+        case SETTINGS:
+            settingsPage.draw(*display, *data);
+            break;
         case MENU:
             menuPage.draw(*display, *data);
             break;
         case CALENDAR:
             calendarPage.draw(*display, *data);
+            break;
+        case SETUP:
+            setupPage.draw(*display, *data);
             break;
         case SLEEP:
             sleepPage.draw(*display, *data);
@@ -126,17 +154,57 @@ bool UI::takeRefreshRequest() {
 }
 
 void UI::enterSleep() {
-    if (currentPage != SLEEP) {
+    if (currentPage != SLEEP && currentPage != SETUP) {
         openPage(SLEEP);
     }
+}
+
+void UI::openSetup() {
+    openPage(SETUP);
+}
+
+void UI::closeSetup() {
+    if (currentPage == SETUP) {
+        openPage(HOME);
+    }
+}
+
+bool UI::takeSetupRequest() {
+    bool requested = setupRequested;
+    setupRequested = false;
+    return requested;
+}
+
+bool UI::takeSettingsOpened() {
+    bool opened = settingsOpened;
+    settingsOpened = false;
+    return opened;
+}
+
+bool UI::takeSetupRestart() {
+    bool requested = setupRestartRequested;
+    setupRestartRequested = false;
+    return requested;
+}
+
+bool UI::takeSetupCancel() {
+    bool requested = setupCancelRequested;
+    setupCancelRequested = false;
+    return requested;
 }
 
 void UI::showNextPage() {
     // Add new pages here so the test mode shows them too
     switch (currentPage) {
         case HOME:
+            openPage(WIDGETS);
+            break;
+        case WIDGETS:
             menuPage.select(MenuPage::DASHBOARD);
             openPage(MENU);
+            break;
+        case SETTINGS:
+            openPage(HOME);
             break;
         case MENU:
             // Walk through the menu one line at a time, then go on
@@ -151,6 +219,8 @@ void UI::showNextPage() {
         case CALENDAR:
             openPage(SLEEP);
             break;
+        case SETUP:
+            break;  // Setup stays until it is done
         case SLEEP:
             openPage(HOME);
             break;
