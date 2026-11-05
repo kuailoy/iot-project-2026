@@ -4,6 +4,7 @@
 
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/PomodoroPage.h"
 #include "pages/SleepPage.h"
 
 // Keeps track of the current page, handles encoder input
@@ -28,7 +29,8 @@ public:
     // True once after the user pressed "refresh" on the Home page
     bool takeRefreshRequest();
 
-    // Show the sleep screen, any input wakes up to Home
+    // Show the sleep screen, any input wakes up to Home.
+    // Ignored while a Pomodoro timer is running.
     void enterSleep();
     bool isAsleep() const { return currentPage == SLEEP; }
 
@@ -40,6 +42,7 @@ private:
     enum Page {
         HOME,
         MENU,
+        POMODORO,
         SLEEP
     };
 
@@ -52,6 +55,19 @@ private:
     HomePage homePage;
     MenuPage menuPage;
     SleepPage sleepPage;
+    PomodoroPage pomodoroPage;
+
+    Pomodoro pomodoro;
+    int pomodoroDrawnMinutes = -1;
+    int lastDay = -1;
+
+    void onPomodoroRotate(int steps);
+    void onPomodoroPress();
+    void onPomodoroLongPress();
+    void updatePomodoro();
+
+    // Seconds since midnight, -1 while the clock is not synced
+    int32_t clockSeconds() const;
 
     // Returns true if the input was used to wake up
     bool wakeUp();
