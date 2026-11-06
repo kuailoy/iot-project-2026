@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "Calendar.h"
+
 // Shared data between modules and the UI.
 // Modules (time, weather, sensor, calendar) write here,
 // UI pages only read. Each group has a "valid" flag so the
@@ -24,8 +26,9 @@ struct AppData {
     float humidity = 0;
     uint16_t co2 = 0;          // ppm
 
-    // ---------- Calendar ----------
-    bool eventValid = false;
+    // ---------- Calendar (iCal feed) ----------
+    CalendarData calendar;     // Events of the coming weeks, for the Calendar page
+    bool eventValid = false;   // Next event today, for the Home page
     char eventTime[6] = "";    // "10:30"
     char eventTitle[40] = "";
 
