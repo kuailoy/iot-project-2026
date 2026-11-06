@@ -2,6 +2,7 @@
 
 #include "../display/EinkDisplay.h"
 
+#include "pages/CalendarPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
 #include "pages/PomodoroPage.h"
@@ -43,6 +44,7 @@ private:
         HOME,
         MENU,
         POMODORO,
+        CALENDAR,
         SLEEP
     };
 
@@ -56,6 +58,7 @@ private:
     MenuPage menuPage;
     SleepPage sleepPage;
     PomodoroPage pomodoroPage;
+    CalendarPage calendarPage;
 
     Pomodoro pomodoro;
     int pomodoroDrawnMinutes = -1;
