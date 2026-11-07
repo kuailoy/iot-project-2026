@@ -3,13 +3,14 @@
 #include <stdio.h>
 #include <string.h>
 
-const char* const DEFAULT_WIDGETS = "clock:W,weather:M,indoor:M,next:W";
+const char* const DEFAULT_WIDGETS = "agenda:M,claude:M,next:M,co2:S,date:S";
 
 namespace {
 
-const char* const CODES[WIDGET_TYPE_COUNT] = {"clock", "date", "weather", "indoor", "co2", "next", "agenda"};
-const char* const NAMES[WIDGET_TYPE_COUNT] = {"Clock",  "Date", "Weather",    "Indoor",
-                                              "CO2",    "Next event", "Today"};
+const char* const CODES[WIDGET_TYPE_COUNT] = {"clock", "date", "weather", "indoor",
+                                              "co2",   "next", "agenda",  "claude"};
+const char* const NAMES[WIDGET_TYPE_COUNT] = {"Clock", "Date",       "Weather", "Indoor",
+                                              "CO2",   "Next event", "Today",   "Claude"};
 const char SIZE_CODES[SIZE_COUNT] = {'S', 'M', 'L', 'W'};
 const uint8_t COLS[SIZE_COUNT] = {1, 2, 2, 4};
 const uint8_t ROWS[SIZE_COUNT] = {1, 1, 2, 1};

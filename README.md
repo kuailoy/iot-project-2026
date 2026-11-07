@@ -92,9 +92,14 @@ Code: `src/services/SetupPortal.cpp` (setup Wi-Fi, web page), `src/ui/pages/Setu
 
 The touch button switches between the normal Home page and a second page made of widgets.
 Its layout is edited on the settings page (`http://desk.local` → Widgets).
-The editor works like a phone home screen: drag widgets to reorder them, tap one to change its size (Small 1×1, Medium 2×1, Large 2×2, Wide 4×1), move it or remove it, and add new ones.
-Widgets: clock, date, weather, indoor (temperature, humidity, CO2), CO2, next event, today's events.
-The screen is a 4 × 3 grid; widgets are placed in order in the first free spot, so the ones that don't fit are shown on the phone as "doesn't fit".
+The editor works like a phone home screen: drag widgets to reorder them, tap one to change its size (Small 1×1, Medium 2×1, Large 2×2 = full height, Wide 4×1), move it or remove it, and add new ones.
+Widgets: clock, date, weather, indoor (temperature, humidity, CO2), CO2, next event, today's events, Claude usage.
+
+**Claude widget**: how much of your Claude plan's 5-hour session and weekly limit is used, with reset times.
+Claude has no official API for this, so a small Chrome extension reads it in your logged-in browser and sends
+only the numbers to the display (`POST /claude`). Setup: `tools/claude-usage-extension/README.md`.
+It looks like the Home page (same header, footer and dividing lines); between them is a 4 × 2 grid.
+Widgets are placed in order in the first free spot, so the ones that don't fit are shown on the phone as "doesn't fit".
 Code: `src/app/WidgetLayout.*` (layout), `src/ui/pages/WidgetPage.cpp` (drawing), `handleWidgets()` in `src/services/SetupPortal.cpp` (editor).
 
 ## Calendar

@@ -107,6 +107,7 @@ void startSetup();
 void updateSetup();
 void applyWidgets();
 void applySettingsChanges();
+void applyClaudeUsage(const ClaudeUsage& usage);
 void fillSettingsPage();
 
 // ---------- Setup ----------
@@ -283,6 +284,34 @@ void fillSettingsPage() {
     ui.requestRedraw();
 }
 
+// New Claude plan numbers from the browser extension. The screen is only
+// redrawn when something it shows changes (E-Ink refreshes are slow).
+void applyClaudeUsage(const ClaudeUsage& usage) {
+    auto percent = [](float value) -> uint8_t {
+        return uint8_t(value < 0 ? 0 : value > 100 ? 100 : lroundf(value));
+    };
+    uint8_t session = percent(usage.sessionPercent);
+    uint8_t weekly = percent(usage.weeklyPercent);
+    bool changed = !appData.claudeValid || session != appData.claudeSession || weekly != appData.claudeWeekly ||
+                   usage.sessionResets != appData.claudeSessionReset ||
+                   usage.weeklyResets != appData.claudeWeeklyReset;
+
+    // An "x min ago" note appears after 30 min without news: redraw when it goes away
+    bool wasOld = appData.claudeValid && appData.epoch - appData.claudeUpdated > 30 * 60;
+
+    appData.claudeValid = true;
+    appData.claudeSession = session;
+    appData.claudeWeekly = weekly;
+    appData.claudeSessionReset = usage.sessionResets;
+    appData.claudeWeeklyReset = usage.weeklyResets;
+    appData.claudeUpdated = time(nullptr);
+    Serial.printf("Claude usage: session %u%%, week %u%%\n", session, weekly);
+
+    if (changed || wasOld) {
+        ui.requestRedraw();
+    }
+}
+
 // Apply what was changed on the settings page (already saved)
 void applySettingsChanges() {
     if (portal.takeWidgetsChanged()) {
@@ -299,6 +328,10 @@ void applySettingsChanges() {
         appData.eventCount = 0;
         ui.requestRedraw();
         downloadNow = true;
+    }
+    ClaudeUsage usage;
+    if (portal.takeClaudeUsage(usage)) {
+        applyClaudeUsage(usage);
     }
     if (portal.takeWifiChanged()) {
         strlcpy(appData.wifiName, settings.wifiSsid.c_str(), sizeof(appData.wifiName));
@@ -370,6 +403,7 @@ void updateTime() {
 
     bool minuteChanged = !appData.timeValid || now.tm_min != appData.now.tm_min;
     appData.now = now;
+    appData.epoch = time(nullptr);
     appData.timeValid = true;
     appData.wifiConnected = (WiFi.status() == WL_CONNECTED);
 

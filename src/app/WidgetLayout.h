@@ -5,8 +5,9 @@
 
 // Widgets of the second home page (opened with the touch button).
 //
-// The page is a grid of 4 x 3 cells. The layout is an ordered list such as
-// "clock:W,weather:M,indoor:M,next:W" (saved in Settings, edited on the
+// The page looks like the Home page (header, footer, lines between the
+// widgets); between them is a grid of 4 x 2 cells. The layout is an
+// ordered list such as "agenda:M,claude:M,next:M,co2:S,date:S" (saved in Settings, edited on the
 // phone). Widgets are placed in that order, each in the first free spot
 // (row by row), like phone home screens. Widgets that don't fit are left out.
 //
@@ -20,19 +21,20 @@ enum WidgetType : uint8_t {
     WIDGET_CO2,
     WIDGET_NEXT_EVENT,
     WIDGET_AGENDA,
+    WIDGET_CLAUDE,     // Claude plan usage (session and weekly limit)
     WIDGET_TYPE_COUNT
 };
 
 enum WidgetSize : uint8_t {
     SIZE_S,     // 1 x 1 cells
     SIZE_M,     // 2 x 1
-    SIZE_L,     // 2 x 2
+    SIZE_L,     // 2 x 2 (the full height)
     SIZE_WIDE,  // 4 x 1
     SIZE_COUNT
 };
 
 constexpr int WIDGET_COLS = 4;
-constexpr int WIDGET_ROWS = 3;
+constexpr int WIDGET_ROWS = 2;
 constexpr int MAX_WIDGETS = 12;
 
 // Shown until the user saves their own layout

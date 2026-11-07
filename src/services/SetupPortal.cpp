@@ -96,6 +96,10 @@ const char* const PAGE_STYLE =
     ".row span+span{color:var(--muted)}"
     ".screen{position:relative;height:0;padding-top:60%;background:var(--card);border:1px solid var(--line);"
     "border-radius:14px;margin-bottom:14px;user-select:none;-webkit-user-select:none}"
+    ".shead{position:absolute;left:4%;right:4%;top:0;height:20%;border-bottom:2px solid var(--fg);"
+    "display:flex;align-items:center;font-size:18px}"
+    ".grid{position:absolute;left:2%;right:2%;top:20.4%;height:63.8%}"
+    ".sfoot{position:absolute;left:4%;right:4%;top:84.2%;border-top:2px solid var(--fg)}"
     ".tile{position:absolute;display:flex;flex-direction:column;justify-content:space-between;padding:6px 8px;"
     "border:2px solid var(--fg);border-radius:8px;background:var(--card);font-size:12px;font-weight:600;"
     "line-height:1.2;overflow:hidden;cursor:grab;touch-action:none}"
@@ -107,7 +111,7 @@ const char* const PAGE_STYLE =
     "padding:9px 14px;font:inherit;font-size:15px;cursor:pointer}"
     ".chip.on{background:var(--fg);border-color:var(--fg);color:var(--bg)}"
     ".chip:disabled{opacity:.35}"
-    ".chip.out{border-style:dashed;color:var(--muted)}"
+    ".chip.out{border-style:dashed;color:var(--muted)}.chip.out.on{color:var(--bg)}"
     ".hint{color:var(--muted);font-size:14px;margin:0 4px 22px}"
     ".foot a{color:var(--fg)}"
     ".back{display:inline-block;color:var(--muted);text-decoration:none;margin-bottom:18px}"
@@ -189,6 +193,8 @@ void SetupPortal::addRoutes() {
     server.on("/wifi", HTTP_GET, [this]() { handleWifiPage(); });
     server.on("/wifi", HTTP_POST, [this]() { handleWifiSave(); });
     server.on("/wifistatus", HTTP_GET, [this]() { handleWifiStatus(); });
+    server.on("/claude", HTTP_POST, [this]() { handleClaude(); });
+    server.on("/claude", HTTP_OPTIONS, [this]() { handleClaudePreflight(); });
     // Phones check e.g. /generate_204 or /hotspot-detect.html: send them to the page
     server.onNotFound([this]() { redirectToRoot(); });
     routesAdded = true;
@@ -218,6 +224,15 @@ bool SetupPortal::takeWidgetsChanged() { return takeFlag(widgetsChanged); }
 bool SetupPortal::takeCityChanged() { return takeFlag(cityChanged); }
 bool SetupPortal::takeCalendarChanged() { return takeFlag(calendarChanged); }
 bool SetupPortal::takeWifiChanged() { return takeFlag(wifiChanged); }
+
+bool SetupPortal::takeClaudeUsage(ClaudeUsage& usage) {
+    if (!claudeReceived) {
+        return false;
+    }
+    usage = claudeUsage;
+    claudeReceived = false;
+    return true;
+}
 
 void SetupPortal::restartMdns() {
     MDNS.end();
@@ -631,16 +646,16 @@ function name(c){for(var i=0;i<CAT.length;i++)if(CAT[i][0]==c)return CAT[i][1];r
 function parse(t){var a=[];t.split(",").forEach(function(p){var k=p.split(":");
  if(k.length==2&&name(k[0])&&SZ[k[1]])a.push({t:k[0],s:k[1]})});return a.slice(0,12)}
 function ser(){return L.map(function(w){return w.t+":"+w.s}).join(",")}
-function place(){var u=[[0,0,0,0],[0,0,0,0],[0,0,0,0]];L.forEach(function(w){var d=SZ[w.s];w.p=null;
- for(var r=0;r+d[1]<=3&&!w.p;r++)for(var c=0;c+d[0]<=4&&!w.p;c++){var ok=1,x,y;
+function place(){var u=[[0,0,0,0],[0,0,0,0]];L.forEach(function(w){var d=SZ[w.s];w.p=null;
+ for(var r=0;r+d[1]<=2&&!w.p;r++)for(var c=0;c+d[0]<=4&&!w.p;c++){var ok=1,x,y;
   for(y=r;y<r+d[1];y++)for(x=c;x<c+d[0];x++)if(u[y][x])ok=0;
   if(ok){for(y=r;y<r+d[1];y++)for(x=c;x<c+d[0];x++)u[y][x]=1;w.p=[c,r]}}})}
 function draw(){place();var s=$("scr"),o=$("out");s.innerHTML="";o.innerHTML="";
  L.forEach(function(w,i){var d=SZ[w.s];
-  if(w.p){var t=document.createElement("div"),x=16+w.p[0]*195,y=16+w.p[1]*153;
+  if(w.p){var t=document.createElement("div");
    t.className="tile"+(i==sel?" sel":"");t.dataset.i=i;
-   t.style.left=x/8+"%";t.style.top=y/4.8+"%";
-   t.style.width=(d[0]*183+(d[0]-1)*12)/8+"%";t.style.height=(d[1]*141+(d[1]-1)*12)/4.8+"%";
+   t.style.left="calc("+w.p[0]*25+"% + 3px)";t.style.top="calc("+w.p[1]*50+"% + 3px)";
+   t.style.width="calc("+d[0]*25+"% - 6px)";t.style.height="calc("+d[1]*50+"% - 6px)";
    t.innerHTML=name(w.t)+"<small>"+SN[w.s]+"</small>";grab(t);s.appendChild(t)}
   else{var b=document.createElement("button");b.type="button";b.className="chip out"+(i==sel?" on":"");
    b.textContent=name(w.t)+" · doesn't fit";b.onclick=function(){sel=i;draw()};o.appendChild(b)}});
@@ -673,6 +688,7 @@ function save(){var v=$("save");v.disabled=true;v.textContent="Saving...";var x=
  x.onload=function(){if(x.status==200){dirty=false;draw()}else{v.disabled=false;v.textContent="Try again"}};
  x.onerror=function(){v.disabled=false;v.textContent="Try again"};
  x.send("layout="+encodeURIComponent(ser()))}
+var now=new Date();$("clk").textContent=("0"+now.getHours()).slice(-2)+":"+("0"+now.getMinutes()).slice(-2);
 draw();
 )JS";
 
@@ -685,7 +701,8 @@ void SetupPortal::handleWidgets() {
             "<p class=sub>Opens with the touch button. Drag widgets to move them, tap one to change its size.</p>";
 
     body += "<div class=head><span>Display</span><span id=cnt></span></div>"
-            "<div class=screen id=scr></div><div class=chips id=out></div>"
+            "<div class=screen><div class=shead><b id=clk></b></div><div class=grid id=scr></div>"
+            "<div class=sfoot></div></div><div class=chips id=out></div>"
             "<p class=hint id=hint>Tap a widget to resize, move or remove it.</p>";
 
     body += "<div id=tools><div class=head><span id=tname></span></div><div class=chips>";
@@ -786,6 +803,18 @@ void SetupPortal::handleSettings() {
     body += "<div class=head><span>Second screen</span></div><div class=card><a class=row href=/widgets>"
             "<span>Widgets</span><span>" + String(widgets) + (widgets == 1 ? " widget" : " widgets") +
             " &rsaquo;</span></a></div>";
+
+    // Claude usage from the browser extension
+    String claudeStatus = "Not received yet";
+    if (claudeAtMs != 0) {
+        unsigned long minutes = (millis() - claudeAtMs) / 60000;
+        claudeStatus = String(int(claudeUsage.sessionPercent + 0.5f)) + "% session &middot; " +
+                       (minutes == 0 ? String("just now") : String(minutes) + " min ago");
+    }
+    body += "<div class=head><span>Claude usage</span></div><div class=card><div class=row>"
+            "<span>Browser extension</span><span>" + claudeStatus + "</span></div></div>"
+            "<p class=note>Sent by the Chrome extension in tools/claude-usage-extension, "
+            "for the Claude widget.</p>";
 
     body += "<form method=post action=/settings>";
 
@@ -929,6 +958,37 @@ void SetupPortal::handleWifiStatus() {
                      : switchState == Switch::IDLE     ? "idle"
                                                        : "switching";
     server.send(200, "text/plain", text);
+}
+
+// ---------- Claude usage (browser extension) ----------
+
+// The extension runs in the user's browser; allow its requests from there
+static void allowBrowser(WebServer& server) {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+    server.sendHeader("Access-Control-Allow-Private-Network", "true");
+}
+
+void SetupPortal::handleClaudePreflight() {
+    allowBrowser(server);
+    server.send(204, "text/plain", "");
+}
+
+void SetupPortal::handleClaude() {
+    allowBrowser(server);
+    ClaudeUsage usage;
+    if (!parseClaudeUsage(server.arg("plain").c_str(), usage)) {
+        server.send(400, "text/plain", "expected {\"session\":54,\"weekly\":29,...}");
+        return;
+    }
+    claudeUsage = usage;
+    claudeReceived = true;
+    claudeAtMs = millis();
+    if (claudeAtMs == 0) {
+        claudeAtMs = 1;
+    }
+    server.send(200, "text/plain", "ok");
 }
 
 // ---------- QR code ----------

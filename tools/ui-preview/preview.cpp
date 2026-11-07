@@ -51,6 +51,15 @@ static AppData demoData() {
     data.humidity = 45;
     data.co2 = 640;
 
+    // Claude plan usage like the claude.ai example: 54% session, 29% week
+    data.epoch = 1793714400;               // Mon 05 Oct-like test moment (UTC), only differences matter
+    data.claudeValid = true;
+    data.claudeSession = 54;
+    data.claudeWeekly = 29;
+    data.claudeSessionReset = data.epoch + 2 * 3600 + 20 * 60;
+    data.claudeWeeklyReset = data.epoch + 2 * 86400 + 6 * 3600;
+    data.claudeUpdated = data.epoch - 3 * 60;
+
     // Calendar events from the Figma designs
     struct Sample {
         int day, hour, min, length;
@@ -188,15 +197,32 @@ int main() {
     savePbm(canvas, "out/home2.pbm");
 
     widgetData.widgetCount =
-        layoutWidgets("clock:L,agenda:L,date:S,co2:S,weather:M,next:M", widgetData.widgets, MAX_WIDGETS);
+        layoutWidgets("agenda:L,weather:M,date:S,co2:S", widgetData.widgets, MAX_WIDGETS);
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-all.pbm");
 
-    widgetData.widgetCount = layoutWidgets("indoor:W,clock:M,weather:S,date:S,next:W", widgetData.widgets, MAX_WIDGETS);
+    widgetData.widgetCount = layoutWidgets("indoor:W,next:M,weather:S,date:S", widgetData.widgets, MAX_WIDGETS);
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-wide.pbm");
+
+    widgetData.widgetCount = layoutWidgets("claude:L,claude:M,claude:S,clock:S", widgetData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData);
+    savePbm(canvas, "out/home2-claude.pbm");
+
+    // Old numbers and no numbers yet
+    widgetData.claudeUpdated = widgetData.epoch - 95 * 60;
+    widgetData.widgetCount = layoutWidgets("claude:W,claude:M,claude:S,clock:S", widgetData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData);
+    widgetData.claudeValid = false;
+    savePbm(canvas, "out/home2-claude-old.pbm");
+    widgetData.widgetCount = layoutWidgets("claude:W,claude:M,claude:S", widgetData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData);
+    savePbm(canvas, "out/home2-claude-none.pbm");
 
     printf("Saved all pages (.pbm) in out/\n");
     return 0;

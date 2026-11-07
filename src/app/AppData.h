@@ -30,6 +30,7 @@ struct AppData {
     // ---------- Time (NTP) ----------
     bool timeValid = false;
     struct tm now = {};
+    time_t epoch = 0;              // Same moment, seconds since 1970 (UTC)
 
     // ---------- Outdoor weather (Open-Meteo) ----------
     bool weatherValid = false;
@@ -67,6 +68,14 @@ struct AppData {
     // QR code shown on the setup or settings page
     uint8_t qrSize = 0;                       // Modules per side, 0 = no code
     uint8_t qrCode[(41 * 41 + 7) / 8] = {};   // 1 bit per module, row by row, MSB first
+
+    // ---------- Claude plan usage (browser extension, see ClaudeUsage.h) ----------
+    bool claudeValid = false;      // Numbers received at least once
+    uint8_t claudeSession = 0;     // % of the 5-hour limit used
+    uint8_t claudeWeekly = 0;      // % of the weekly limit used
+    time_t claudeSessionReset = 0; // UTC, 0 = unknown
+    time_t claudeWeeklyReset = 0;
+    time_t claudeUpdated = 0;      // When the numbers arrived (UTC)
 
     // ---------- Status ----------
     bool wifiConnected = false;

@@ -5,6 +5,7 @@
 #include <WebServer.h>
 
 #include "../app/Settings.h"
+#include "ClaudeUsage.h"
 
 // Web pages of the device.
 //
@@ -55,6 +56,10 @@ public:
     bool takeCalendarChanged();
     bool takeWifiChanged();      // The home Wi-Fi was switched on the settings page
 
+    // Claude plan usage sent by the browser extension (POST /claude).
+    // True once per new message, with the numbers in `usage`.
+    bool takeClaudeUsage(ClaudeUsage& usage);
+
     // Call often from loop()
     void loop();
 
@@ -88,6 +93,9 @@ private:
     bool cityChanged = false;
     bool calendarChanged = false;
     bool wifiChanged = false;
+    ClaudeUsage claudeUsage;
+    bool claudeReceived = false;
+    unsigned long claudeAtMs = 0;   // When the last numbers came, 0 = never
 
     // Switching the home Wi-Fi from the settings page
     enum class Switch : uint8_t { IDLE, PENDING, SWITCHING, DONE, FAILED };
@@ -128,6 +136,8 @@ private:
     void handleWifiPage();
     void handleWifiSave();
     void handleWifiStatus();
+    void handleClaude();
+    void handleClaudePreflight();
     // Network list and password fields, shared by setup and the Wi-Fi page
     String wifiFields(const String& preselect, const char* refreshLink);
     // ssid / password from a submitted form; false (and a page sent) if invalid
