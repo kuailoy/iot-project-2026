@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Desk display: Now playing",
+  "version": "1.0",
+  "description": "Shows what YouTube Music plays in this browser on the desk display.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://*/music"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://music.youtube.com/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}

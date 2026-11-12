@@ -8,6 +8,7 @@ Import("env")
 SETTING_NAMES = (
     "WEATHER_API_KEY",
     "CALENDAR_ICS_URL",
+    "GITHUB_TOKEN",
 )
 
 if env.IsIntegrationDump():

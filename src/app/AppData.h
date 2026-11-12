@@ -31,6 +31,20 @@ constexpr int MAX_CALENDAR_EVENTS = 200;
 // Events are loaded from this week's Monday to this many days ahead
 constexpr int CALENDAR_DAYS_AHEAD = 7 * 8;
 
+// GitHub's contribution calendar covers the last year, in at most 53 weeks
+constexpr int GITHUB_MAX_DAYS = 53 * 7;
+
+// Contribution graph of the GitHub user whose token is saved (GitHubService.h).
+// Helpers to read it: GitHubData.h
+struct GitHubContributions {
+    char login[40] = "";
+    uint32_t total = 0;         // Contributions in these days ("in the last year")
+    int32_t lastDay = 0;        // Newest day as a day number (DateUtil.h), usually today
+    uint16_t lastDayCount = 0;  // Contributions on that day
+    uint16_t dayCount = 0;
+    uint8_t levels[GITHUB_MAX_DAYS] = {};  // 0 = none ... 4 = most, like GitHub's greens; oldest first
+};
+
 // Shared data between modules and the UI.
 // Modules (time, weather, sensor, calendar) write here,
 // UI pages only read. Each group has a "valid" flag so the
@@ -41,10 +55,15 @@ struct AppData {
     struct tm now = {};
     time_t epoch = 0;              // Same moment, seconds since 1970 (UTC)
 
-    // ---------- Outdoor weather (Open-Meteo) ----------
+    // ---------- Outdoor weather (OpenWeatherMap) ----------
     bool weatherValid = false;
     float outdoorTemp = 0;
     int weatherCode = 0;       // OpenWeatherMap condition code
+    float feelsLike = 0;       // C
+    float windSpeed = 0;       // m/s
+    int windDeg = -1;          // Where the wind comes from, 0 = north, 90 = east; -1 = unknown
+    time_t sunrise = 0;        // Today, UTC; 0 = none (polar day or night) or unknown
+    time_t sunset = 0;
     char city[24] = "Kuopio";
 
     // ---------- Indoor sensor (SCD-41) ----------
@@ -82,6 +101,24 @@ struct AppData {
     bool pricesValid = false;
     int priceCount = 0;
     PricePoint prices[MAX_PRICES];  // Sorted by time
+
+    // ---------- GitHub contributions (GitHub widget) ----------
+    bool githubTokenSet = false;   // A token is saved; without one there is nothing to load
+    bool githubValid = false;      // Downloaded at least once with this token
+    bool githubTokenRefused = false;  // GitHub didn't accept the token at the last try
+    GitHubContributions github;
+
+    // ---------- Now playing (YouTube Music, browser extension, see NowPlaying.h) ----------
+    // Helpers to read this: MusicData.h
+    bool musicValid = false;       // A message came at least once
+    bool musicOpen = false;        // The YouTube Music tab is open (false: closed, last song kept)
+    bool musicPlaying = false;     // false = paused
+    char musicTitle[64] = "";
+    char musicArtist[48] = "";
+    char musicAlbum[48] = "";
+    uint16_t musicPosition = 0;    // Seconds into the track when the message came
+    uint16_t musicDuration = 0;    // Seconds, 0 = unknown
+    time_t musicUpdated = 0;       // When the last message came (UTC)
 
     // ---------- Claude plan usage (browser extension, see ClaudeUsage.h) ----------
     bool claudeValid = false;      // Numbers received at least once

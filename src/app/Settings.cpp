@@ -9,6 +9,9 @@
 #ifndef CALENDAR_ICS_URL
 #define CALENDAR_ICS_URL ""
 #endif
+#ifndef GITHUB_TOKEN
+#define GITHUB_TOKEN ""
+#endif
 
 namespace {
 
@@ -35,6 +38,7 @@ void load(Settings& settings) {
     settings.wifiSsid = prefs.getString("ssid", "");
     settings.wifiPassword = prefs.getString("pass", "");
     settings.calendarUrl = prefs.isKey("cal") ? prefs.getString("cal", "") : String(CALENDAR_ICS_URL);
+    settings.githubToken = prefs.isKey("gh") ? prefs.getString("gh", "") : String(GITHUB_TOKEN);
     settings.apPassword = prefs.getString("apPass", "");
     settings.widgets = prefs.isKey("w2") ? prefs.getString("w2", "") : String(DEFAULT_WIDGETS);
     settings.cityName = prefs.getString("city", "Kuopio");
@@ -55,6 +59,7 @@ void save(const Settings& settings) {
     prefs.putString("ssid", settings.wifiSsid);
     prefs.putString("pass", settings.wifiPassword);
     prefs.putString("cal", settings.calendarUrl);
+    prefs.putString("gh", settings.githubToken);
     prefs.putString("apPass", settings.apPassword);
     prefs.putString("w2", settings.widgets);
     prefs.putString("city", settings.cityName);

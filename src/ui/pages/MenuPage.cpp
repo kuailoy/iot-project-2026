@@ -2,8 +2,10 @@
 #include "../Components.h"
 #include "../../app/CalendarData.h"
 #include "../../app/ElectricityData.h"
+#include "../../app/MusicData.h"
 
 #include <stdio.h>
+#include <string.h>
 
 using namespace Components;
 
@@ -33,6 +35,16 @@ void MenuPage::draw(Adafruit_GFX& gfx, const AppData& data) {
         snprintf(calendarValue, sizeof(calendarValue), "No events");
     }
 
+    // Music row: the song, or "Paused" / "Nothing playing"
+    char musicValue[24] = "Nothing playing";
+    if (MusicData::active(data)) {
+        if (data.musicPlaying) {
+            strlcpy(musicValue, data.musicTitle, sizeof(musicValue));
+        } else {
+            snprintf(musicValue, sizeof(musicValue), "Paused");
+        }
+    }
+
     // Electricity row: the spot price now
     char priceValue[20] = "--";
     const PricePoint* price = ElectricityData::priceNow(data);
@@ -48,7 +60,10 @@ void MenuPage::draw(Adafruit_GFX& gfx, const AppData& data) {
     for (int i = 0; i < ITEM_COUNT; i++) {
         int16_t y = HEADER_LINE_Y + 2 + i * rowHeight;
         bool isLast = (i == ITEM_COUNT - 1);
-        const char* value = i == CALENDAR ? calendarValue : i == ELECTRICITY ? priceValue : values[i];
+        const char* value = i == CALENDAR    ? calendarValue
+                          : i == ELECTRICITY ? priceValue
+                          : i == MUSIC       ? musicValue
+                                             : values[i];
         drawMenuRow(gfx, y, rowHeight, LABELS[i], value, i == selectedItem, !isLast);
     }
 

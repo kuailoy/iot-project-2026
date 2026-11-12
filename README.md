@@ -93,15 +93,31 @@ Code: `src/services/SetupPortal.cpp` (setup Wi-Fi, web page), `src/ui/pages/Setu
 ## Second home page (widgets)
 
 The touch button switches between the normal Home page and a second page made of widgets.
+
+**Turning off**: on either home page, hold the touch button for 3 seconds. The screen shows "Turned off" with the time,
+and once you lift your finger the device goes into deep sleep (Wi-Fi, CO2 sensor and screen off; E-Ink keeps the page without power).
+Touch the button again to turn it on: it starts up like after a reset, in 10 to 20 seconds.
+Code: `powerOff()` and the touch handling in `handleInput()` in `src/main.cpp`, `src/ui/pages/PowerOffPage.cpp`.
+A tap now acts when the finger is lifted (so a hold isn't also a tap).
 Its layout is edited on the settings page (`http://desk.local` → Widgets).
 The editor works like a phone home screen: drag widgets to reorder them, tap one to change its size (Small 1×1, Medium 2×1, Large 2×2, Wide 4×1), move it or remove it, and add new ones.
 Widgets: clock, date, weather, indoor (temperature, humidity, CO2), CO2, next event, today's events, Claude usage, electricity price.
+The large and wide weather widgets also show feels like, wind (m/s and where it comes from), sunrise and sunset,
+all from the same OpenWeatherMap request.
 
 **Claude widget**: how much of your Claude plan's 5-hour session and weekly limit is used, with reset times.
 Claude has no official API for this, so a small Chrome extension reads it in your logged-in browser and sends
 only the numbers to the display (`POST /claude`). Setup: `tools/claude-usage-extension/README.md`.
 
 **Electricity widget**: the spot price now and whether it is cheap; bigger sizes add the day's chart and the cheapest 3 hours.
+
+**GitHub widget**: your contribution graph of the last year, like on your GitHub profile (a column per week, Sunday at the top).
+The screen has no greens, so busier days are bigger black squares and days without contributions are small dots.
+Next to it: contributions today, in the last year, and the current streak (the large size shows the last two as big numbers).
+It needs a GitHub personal access token: github.com → Settings → Developer settings → Personal access tokens.
+A fine-grained token without any permissions is enough (public contributions); paste it on the settings page (`desk.local`),
+or set `GITHUB_TOKEN` in `.env.local`. The GraphQL API is asked every 30 minutes.
+Code: `src/services/GitHubService.cpp` (download), `GitHubParser.cpp` (answer), `src/app/GitHubData.h`, `drawGitHub()` in `src/ui/pages/WidgetPage.cpp`.
 
 The whole screen is a 4 × 3 grid of widgets (no clock header or hint footer), with lines between them like on Home.
 Widgets are placed in order in the first free spot, so the ones that don't fit are shown on the phone as "doesn't fit".

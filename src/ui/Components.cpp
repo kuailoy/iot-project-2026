@@ -183,6 +183,34 @@ void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y, bool check) {
 
 // ---------- Screen sections ----------
 
+void drawMusicIcon(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t size, bool filled) {
+    // Proportions of the note in the Now playing designs (21_ and 22_eink-now-playing-*.png)
+    const int16_t r = size * 13 / 100;                                  // Note head radius
+    const int16_t stroke = filled ? (size / 24 > 2 ? size / 24 : 2) : 2;
+    const int16_t leftX = x + size * 30 / 100, leftY = y + size * 74 / 100;
+    const int16_t rightX = x + size * 72 / 100, rightY = y + size * 66 / 100;
+    const int16_t leftTop = y + size * 24 / 100, rightTop = y + size * 16 / 100;
+    const int16_t leftStem = leftX + r - stroke, rightStem = rightX + r - stroke;
+    const int16_t beam = filled ? size * 9 / 100 : stroke;
+
+    if (filled) {
+        gfx.fillCircle(leftX, leftY, r, COLOR_FG);
+        gfx.fillCircle(rightX, rightY, r, COLOR_FG);
+    } else {
+        for (int16_t i = 0; i < stroke; i++) {
+            gfx.drawCircle(leftX, leftY, r - i, COLOR_FG);
+            gfx.drawCircle(rightX, rightY, r - i, COLOR_FG);
+        }
+    }
+    gfx.fillRect(leftStem, leftTop, stroke, leftY - leftTop, COLOR_FG);
+    gfx.fillRect(rightStem, rightTop, stroke, rightY - rightTop, COLOR_FG);
+
+    // Slanted beam from the top of one stem to the other
+    const int16_t beamRight = rightStem + stroke;
+    gfx.fillTriangle(leftStem, leftTop, beamRight, rightTop, beamRight, rightTop + beam, COLOR_FG);
+    gfx.fillTriangle(leftStem, leftTop, leftStem, leftTop + beam, beamRight, rightTop + beam, COLOR_FG);
+}
+
 void drawHeader(Adafruit_GFX& gfx, const AppData& data) {
     char time[6] = "--:--";
     char date[16] = "";

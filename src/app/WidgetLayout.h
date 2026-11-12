@@ -23,6 +23,8 @@ enum WidgetType : uint8_t {
     WIDGET_AGENDA,
     WIDGET_CLAUDE,     // Claude plan usage (session and weekly limit)
     WIDGET_PRICE,      // Electricity spot price now and today
+    WIDGET_GITHUB,     // GitHub contribution graph
+    WIDGET_MUSIC,      // Now playing in YouTube Music (browser extension)
     WIDGET_TYPE_COUNT
 };
 

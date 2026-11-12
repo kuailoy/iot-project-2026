@@ -9,6 +9,10 @@
 #include <memory>
 #include <new>
 
+// Power: deep sleep while "turned off", woken by the touch button
+#include <driver/rtc_io.h>
+#include <esp_sleep.h>
+
 // Display: E-Ink
 #include <Adafruit_GFX.h>
 #include <Adafruit_EPD.h>
@@ -29,7 +33,9 @@
 #include "services/CalendarService.h"
 #include "services/WeatherService.h"
 #include "services/ElectricityService.h"
+#include "services/GitHubService.h"
 #include "app/DateUtil.h"
+#include "app/MusicData.h"
 #include "app/Settings.h"
 #include "services/SetupPortal.h"
 #include "ui/UI.h"
@@ -53,8 +59,11 @@ const unsigned long WEATHER_INTERVAL_MS = 15 * 60 * 1000UL;
 const unsigned long WEATHER_RETRY_MS = 60 * 1000UL;
 const unsigned long CALENDAR_INTERVAL_MS = 30 * 60 * 1000UL;
 const unsigned long CALENDAR_RETRY_MS = 2 * 60 * 1000UL;
+const unsigned long GITHUB_INTERVAL_MS = 30 * 60 * 1000UL;
+const unsigned long GITHUB_RETRY_MS = 5 * 60 * 1000UL;
 const unsigned long SENSOR_INTERVAL_MS = 30 * 1000UL;
 const unsigned long LONG_PRESS_MS = 800;
+const unsigned long POWER_HOLD_MS = 3000;  // Touch button held this long on a home page: turn off
 const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
 
 // Wait for time, weather and sensor before the first (slow) E-Ink refresh
@@ -102,6 +111,8 @@ void handleInput();
 void updateWeather(bool force);
 void updateCalendar(bool force);
 void updatePrices(bool force);
+void updateGitHub(bool force);
+void powerOff();
 void showPagesInTurn();
 void connectWiFi(bool wait);
 void keepWiFi();
@@ -111,6 +122,7 @@ void updateSetup();
 void applyWidgets();
 void applySettingsChanges();
 void applyClaudeUsage(const ClaudeUsage& usage);
+void applyNowPlaying(const NowPlaying& song);
 void fillSettingsPage();
 
 // ---------- Setup ----------
@@ -119,6 +131,9 @@ void setup() {
     initSerial();
     initI2C();
 
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
+        Serial.println("Turned on with the touch button");
+    }
     Serial.println("System starting...");
 
     initDisplay();
@@ -155,7 +170,12 @@ void loop() {
     updateWeather(refresh);
     updateCalendar(refresh);
     updatePrices(refresh);
+    updateGitHub(refresh);
     updateDisplay();
+
+    if (ui.readyToPowerOff()) {
+        powerOff();  // Does not return: turning on again restarts from setup()
+    }
 
     delay(10);
 }
@@ -184,6 +204,9 @@ void initDisplay() {
 void initSensor() {
     scd4x.begin(Wire, SCD41_I2C_ADDR_62);
 
+    // Asleep if the device was turned off (powerOff); harmless otherwise
+    scd4x.wakeUp();
+
     // Sensor may still be measuring after a soft reset, stop it first
     scd4x.stopPeriodicMeasurement();
     delay(500);
@@ -209,6 +232,9 @@ void IRAM_ATTR onTouchInterrupt() {
 }
 
 void initTouch() {
+    // After being turned off the pin is still set up for waking (powerOff)
+    rtc_gpio_deinit((gpio_num_t)TOUCH_PIN);
+
     // Pull-down keeps the pin LOW if the module is not connected
     pinMode(TOUCH_PIN, INPUT_PULLDOWN);
     attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), onTouchInterrupt, RISING);
@@ -219,6 +245,7 @@ void initWiFi() {
     SettingsStore::load(settings);
     applyWidgets();
     strlcpy(appData.city, settings.cityName.c_str(), sizeof(appData.city));
+    appData.githubTokenSet = settings.githubToken.length() > 0;
     portal.setWeatherKey(WEATHER_API_KEY);
 
     // First start (or after a reset): no home Wi-Fi yet, show the setup page
@@ -354,6 +381,39 @@ void applyClaudeUsage(const ClaudeUsage& usage) {
     }
 }
 
+// What YouTube Music plays, from the browser extension. It sends every 15 s,
+// but the screen is only redrawn when something it shows changes: the song,
+// play/pause, or the tab opening or closing. The time into the song moves
+// on by itself (MusicData.h) and shows at the next minute's redraw.
+void applyNowPlaying(const NowPlaying& song) {
+    bool open = song.title[0] != '\0';
+    bool wasActive = MusicData::active(appData);
+    bool changed = !appData.musicValid || open != appData.musicOpen || song.playing != appData.musicPlaying ||
+                   (open && (strcmp(song.title, appData.musicTitle) != 0 ||
+                             strcmp(song.artist, appData.musicArtist) != 0 ||
+                             strcmp(song.album, appData.musicAlbum) != 0));
+
+    appData.musicValid = true;
+    appData.musicOpen = open;
+    appData.musicPlaying = open && song.playing;
+    if (open) {  // A closed tab keeps the last song, for "last played"
+        strlcpy(appData.musicTitle, song.title, sizeof(appData.musicTitle));
+        strlcpy(appData.musicArtist, song.artist, sizeof(appData.musicArtist));
+        strlcpy(appData.musicAlbum, song.album, sizeof(appData.musicAlbum));
+        appData.musicPosition = song.position;
+        appData.musicDuration = song.duration;
+    }
+    appData.musicUpdated = time(nullptr);
+
+    if (changed) {
+        Serial.printf("Music: %s%s - %s\n", open ? (song.playing ? "" : "(paused) ") : "(closed) ",
+                      appData.musicArtist, appData.musicTitle);
+    }
+    if (changed || wasActive != MusicData::active(appData)) {
+        ui.requestRedraw();
+    }
+}
+
 // Apply what was changed on the settings page (already saved)
 void applySettingsChanges() {
     if (portal.takeWidgetsChanged()) {
@@ -371,9 +431,20 @@ void applySettingsChanges() {
         ui.requestRedraw();
         downloadNow = true;
     }
+    if (portal.takeGithubChanged()) {
+        appData.githubTokenSet = settings.githubToken.length() > 0;
+        appData.githubValid = false;  // The graph may be another user's
+        appData.githubTokenRefused = false;
+        ui.requestRedraw();
+        downloadNow = true;
+    }
     ClaudeUsage usage;
     if (portal.takeClaudeUsage(usage)) {
         applyClaudeUsage(usage);
+    }
+    NowPlaying song;
+    if (portal.takeNowPlaying(song)) {
+        applyNowPlaying(song);
     }
     if (portal.takeWifiChanged()) {
         strlcpy(appData.wifiName, settings.wifiSsid.c_str(), sizeof(appData.wifiName));
@@ -506,11 +577,34 @@ void handleInput() {
     static unsigned long lastInput = 0;
     static bool touchSeen = false;  // The touch module can't be detected, only used
 
+    // Touch button: a tap fires on release, a hold of POWER_HOLD_MS fires once
+    // while still held. The interrupt catches taps that start and end while
+    // the loop is busy; those count as taps.
+    static bool touching = false;
+    static bool holdSent = false;
+    static unsigned long touchStart = 0;
+
     if (touchPending) {
         touchPending = false;
         touchSeen = true;
+        if (!touching) {
+            touching = true;
+            holdSent = false;
+            touchStart = millis();
+            ui.onTouchDown();
+        }
+    }
+    if (touching) {
         lastInput = millis();
-        ui.onTouch();
+        if (digitalRead(TOUCH_PIN) == LOW) {
+            touching = false;
+            if (!holdSent) {
+                ui.onTouch();
+            }
+        } else if (!holdSent && millis() - touchStart >= POWER_HOLD_MS) {
+            holdSent = true;
+            ui.onTouchHold();
+        }
     }
 
     // Sleep only if something can wake the screen up again
@@ -551,6 +645,89 @@ void handleInput() {
     }
 
     wasPressed = pressed;
+}
+
+// GitHub contribution graph for the GitHub widget: every 30 min, as
+// contributions come slowly (the API allows 5000 requests an hour)
+void updateGitHub(bool force) {
+    static unsigned long lastAttempt = 0;
+    static bool everAttempted = false;
+
+    if (WiFi.status() != WL_CONNECTED || portal.active() || settings.githubToken.length() == 0) {
+        return;
+    }
+    if (!force && ui.inUse()) {
+        return;  // Downloads block for a moment
+    }
+    unsigned long interval = appData.githubValid ? GITHUB_INTERVAL_MS : GITHUB_RETRY_MS;
+    if (!force && everAttempted && millis() - lastAttempt < interval) {
+        return;
+    }
+    lastAttempt = millis();
+    everAttempted = true;
+
+    // Into a temporary copy, so a failed update keeps the old graph
+    std::unique_ptr<GitHubContributions> fresh(new (std::nothrow) GitHubContributions());
+    if (!fresh) {
+        Serial.println("GitHub: not enough RAM");
+        return;
+    }
+    String error;
+    bool refused = false;
+    bool ok = fetchContributions(settings.githubToken.c_str(), *fresh, error, refused);
+    if (refused != appData.githubTokenRefused) {
+        appData.githubTokenRefused = refused;  // The widget says so instead of "Loading..."
+        ui.requestRedraw();
+    }
+    if (!ok) {
+        Serial.printf("GitHub request failed: %s\n", error.c_str());
+        return;
+    }
+
+    const GitHubContributions& old = appData.github;
+    bool changed = !appData.githubValid || fresh->total != old.total || fresh->lastDay != old.lastDay ||
+                   fresh->lastDayCount != old.lastDayCount || fresh->dayCount != old.dayCount ||
+                   strcmp(fresh->login, old.login) != 0 ||
+                   memcmp(fresh->levels, old.levels, sizeof(old.levels)) != 0;
+    appData.github = *fresh;
+    appData.githubValid = true;
+    Serial.printf("GitHub: %s, %lu contributions in the last year, %u today\n", fresh->login,
+                  (unsigned long)fresh->total, fresh->lastDayCount);
+
+    if (changed || force) {
+        ui.requestRedraw();
+    }
+}
+
+// Turn off: the "turned off" page is on the screen (E-Ink keeps it without
+// power). Stop the sensor and the panel, then deep sleep until the touch
+// button is touched again. Waking up restarts the device from setup().
+void powerOff() {
+    Serial.println("Power: turning off, touch the button to turn on");
+
+    // A finger still on the button would wake the device right away
+    while (digitalRead(TOUCH_PIN) == HIGH) {
+        delay(20);
+    }
+    detachInterrupt(digitalPinToInterrupt(TOUCH_PIN));
+
+    if (sensorFound) {
+        scd4x.stopPeriodicMeasurement();
+        delay(500);          // The sensor needs this before the next command
+        scd4x.powerDown();   // initSensor() wakes it up again
+    }
+    display.sleep();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+
+    // Wake when the pin goes HIGH (touched). The pull-down keeps it LOW if
+    // the module is unplugged, so a loose pin can't turn the device on.
+    rtc_gpio_pullup_dis((gpio_num_t)TOUCH_PIN);
+    rtc_gpio_pulldown_en((gpio_num_t)TOUCH_PIN);
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_PIN, 1);
+
+    Serial.flush();
+    esp_deep_sleep_start();
 }
 
 // Test mode: switch to the next page every DEMO_PAGE_MS, forever.
@@ -618,14 +795,30 @@ void updateWeather(bool force) {
         Serial.println("Weather JSON error: response is missing temperature or condition code");
         return;
     }
-    Serial.printf("Weather: %s, %.1f C, code %d\n", city, temperature, code);
+    // For the big weather widgets. Optional: calm wind has no direction, and
+    // there is no sunrise or sunset during polar day or night.
+    float feelsLike = doc["main"]["feels_like"] | temperature;
+    float windSpeed = doc["wind"]["speed"] | 0.0f;
+    int windDeg = doc["wind"]["deg"] | -1;
+    time_t sunrise = doc["sys"]["sunrise"] | 0L;
+    time_t sunset = doc["sys"]["sunset"] | 0L;
+    Serial.printf("Weather: %s, %.1f C (feels %.1f), wind %.1f m/s from %d, code %d\n", city, temperature,
+                  feelsLike, windSpeed, windDeg, code);
 
     bool changed = !appData.weatherValid ||
                    lroundf(temperature) != lroundf(appData.outdoorTemp) ||
-                   code != appData.weatherCode;
+                   code != appData.weatherCode ||
+                   lroundf(feelsLike) != lroundf(appData.feelsLike) ||
+                   lroundf(windSpeed) != lroundf(appData.windSpeed) || windDeg != appData.windDeg ||
+                   sunrise / 60 != appData.sunrise / 60 || sunset / 60 != appData.sunset / 60;
 
     appData.outdoorTemp = temperature;
     appData.weatherCode = code;
+    appData.feelsLike = feelsLike;
+    appData.windSpeed = windSpeed;
+    appData.windDeg = windDeg;
+    appData.sunrise = sunrise;
+    appData.sunset = sunset;
     appData.weatherValid = true;
 
     if (changed || force) {

@@ -222,7 +222,9 @@ void SetupPortal::addRoutes() {
     server.on("/wifi", HTTP_POST, [this]() { handleWifiSave(); });
     server.on("/wifistatus", HTTP_GET, [this]() { handleWifiStatus(); });
     server.on("/claude", HTTP_POST, [this]() { handleClaude(); });
-    server.on("/claude", HTTP_OPTIONS, [this]() { handleClaudePreflight(); });
+    server.on("/claude", HTTP_OPTIONS, [this]() { handleExtensionPreflight(); });
+    server.on("/music", HTTP_POST, [this]() { handleMusic(); });
+    server.on("/music", HTTP_OPTIONS, [this]() { handleExtensionPreflight(); });
     // Phones check e.g. /generate_204 or /hotspot-detect.html: send them to the page
     server.onNotFound([this]() { redirectToRoot(); });
     routesAdded = true;
@@ -254,6 +256,7 @@ static bool takeFlag(bool& flag) {
 bool SetupPortal::takeWidgetsChanged() { return takeFlag(widgetsChanged); }
 bool SetupPortal::takeCityChanged() { return takeFlag(cityChanged); }
 bool SetupPortal::takeCalendarChanged() { return takeFlag(calendarChanged); }
+bool SetupPortal::takeGithubChanged() { return takeFlag(githubChanged); }
 bool SetupPortal::takeWifiChanged() { return takeFlag(wifiChanged); }
 
 bool SetupPortal::takeClaudeUsage(ClaudeUsage& usage) {
@@ -262,6 +265,15 @@ bool SetupPortal::takeClaudeUsage(ClaudeUsage& usage) {
     }
     usage = claudeUsage;
     claudeReceived = false;
+    return true;
+}
+
+bool SetupPortal::takeNowPlaying(NowPlaying& song) {
+    if (!nowPlayingReceived) {
+        return false;
+    }
+    song = nowPlaying;
+    nowPlayingReceived = false;
     return true;
 }
 
@@ -844,7 +856,7 @@ show("w");setTimeout(poll,3000);
 
 void SetupPortal::handleSettings() {
     String body;
-    body.reserve(4200);
+    body.reserve(5000);
     body += "<div class=logo></div><h1>Desk settings</h1>";
     body += "<p class=sub>On <b>" + htmlEscape(settings->wifiSsid) + "</b> &middot; " +
             WiFi.localIP().toString() + "</p>";
@@ -901,6 +913,21 @@ void SetupPortal::handleSettings() {
     body += hasCalendar ? "New link, or leave empty to keep it" : "webcal://...";
     body += "\"></div>";
     body += "<p class=note>The iCal or webcal link from Tuudo, Google Calendar or Outlook.</p>";
+
+    // GitHub token for the contribution graph widget. A secret too: never sent back.
+    bool hasGithub = settings->githubToken.length() > 0;
+    body += "<div class=head><span>GitHub token</span><span>Optional</span></div><div class=card>";
+    if (hasGithub) {
+        body += "<div class=row><span>Token</span><span>Saved</span></div>"
+                "<label class=net><input type=checkbox name=ghclear value=1>"
+                "<span class=name>Remove the saved token</span></label>";
+    }
+    body += "<input class=field name=gh type=password autocomplete=off autocapitalize=none autocorrect=off "
+            "spellcheck=false placeholder=\"";
+    body += hasGithub ? "New token, or leave empty to keep it" : "github_pat_...";
+    body += "\"></div>";
+    body += "<p class=note>For the GitHub widget. github.com &rsaquo; Settings &rsaquo; Developer settings "
+            "&rsaquo; Personal access tokens: a token without any permissions is enough.</p>";
     body += "<button class=btn>Save</button></form>";
 
     // Wi-Fi
@@ -937,6 +964,18 @@ void SetupPortal::handleSettingsSave() {
         return;
     }
 
+    // GitHub token: a new one, removed, or kept when the field is empty
+    String github = server.arg("gh");
+    github.trim();
+    if (server.arg("ghclear") == "1") {
+        github = "";
+    } else if (github.length() == 0) {
+        github = settings->githubToken;
+    } else if (github.indexOf(' ') >= 0) {
+        sendStatusPage(ICON_CROSS, "Not saved", "A GitHub token has no spaces: copy it again.", "Back");
+        return;
+    }
+
     // Weather city: only when all three fields came (toFloat() of "" is 0)
     String city = server.arg("city");
     city.trim();
@@ -957,6 +996,11 @@ void SetupPortal::handleSettingsSave() {
         settings->calendarUrl = calendar;
         calendarChanged = true;
         Serial.println("Settings: calendar link changed");
+    }
+    if (github != settings->githubToken) {
+        settings->githubToken = github;
+        githubChanged = true;
+        Serial.println("Settings: GitHub token changed");
     }
     SettingsStore::save(*settings);
 
@@ -1053,9 +1097,10 @@ void SetupPortal::handleWifiStatus() {
 
 // ---------- Claude usage (browser extension) ----------
 
-// The extension (tools/claude-usage-extension) runs in the user's browser and
-// posts JSON. Only extensions get CORS permission, web pages don't: then a
-// page can't send JSON here either, the browser asks first (OPTIONS) and stops.
+// The extensions (tools/claude-usage-extension, tools/now-playing-extension) run
+// in the user's browser and post JSON. Only extensions get CORS permission, web
+// pages don't: then a page can't send JSON here either, the browser asks first
+// (OPTIONS) and stops.
 void SetupPortal::allowExtension() {
     String origin = server.header("Origin");
     if (!origin.startsWith("chrome-extension://")) {
@@ -1068,16 +1113,23 @@ void SetupPortal::allowExtension() {
     server.sendHeader("Access-Control-Allow-Private-Network", "true");
 }
 
-void SetupPortal::handleClaudePreflight() {
+void SetupPortal::handleExtensionPreflight() {
     allowExtension();
     server.send(204, "text/plain", "");
 }
 
+// A form or text/plain body could come from any web page without asking first
+bool SetupPortal::requireJson() {
+    if (server.header("Content-Type").startsWith("application/json")) {
+        return true;
+    }
+    server.send(415, "text/plain", "send JSON (Content-Type: application/json)");
+    return false;
+}
+
 void SetupPortal::handleClaude() {
     allowExtension();
-    // A form or text/plain body could come from any web page without asking first
-    if (!server.header("Content-Type").startsWith("application/json")) {
-        server.send(415, "text/plain", "send JSON (Content-Type: application/json)");
+    if (!requireJson()) {
         return;
     }
     ClaudeUsage usage;
@@ -1091,6 +1143,23 @@ void SetupPortal::handleClaude() {
     if (claudeAtMs == 0) {
         claudeAtMs = 1;
     }
+    server.send(200, "text/plain", "ok");
+}
+
+// ---------- Now playing (browser extension) ----------
+
+void SetupPortal::handleMusic() {
+    allowExtension();
+    if (!requireJson()) {
+        return;
+    }
+    NowPlaying song;
+    if (!parseNowPlaying(server.arg("plain").c_str(), song)) {
+        server.send(400, "text/plain", "expected {\"title\":\"...\",\"artist\":\"...\",\"playing\":true,...}");
+        return;
+    }
+    nowPlaying = song;
+    nowPlayingReceived = true;
     server.send(200, "text/plain", "ok");
 }
 

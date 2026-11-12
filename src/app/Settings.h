@@ -8,6 +8,7 @@ struct Settings {
     String wifiSsid;       // Home Wi-Fi, "" = not set up yet: show the setup page
     String wifiPassword;
     String calendarUrl;    // iCal / webcal link, "" = no calendar
+    String githubToken;    // Personal access token for the GitHub widget, "" = none
     String apPassword;     // Password of the setup Wi-Fi, made once on first start
     String widgets;        // Second home page layout, e.g. "clock:W,weather:M" (WidgetLayout.h)
     String cityName;       // Weather location, shown on the screen
@@ -19,8 +20,9 @@ struct Settings {
 
 namespace SettingsStore {
 
-// Load everything. The calendar link defaults to CALENDAR_ICS_URL from
-// .env.local until one is saved on the settings page; the city to Kuopio.
+// Load everything. The calendar link and the GitHub token default to
+// CALENDAR_ICS_URL and GITHUB_TOKEN from .env.local until one is saved on
+// the settings page; the city to Kuopio.
 void load(Settings& settings);
 
 void save(const Settings& settings);

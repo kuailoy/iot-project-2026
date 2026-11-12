@@ -9,6 +9,8 @@
 #include "../../app/CalendarData.h"
 #include "../../app/ElectricityData.h"
 #include "../../app/DateUtil.h"
+#include "../../app/GitHubData.h"
+#include "../../app/MusicData.h"
 
 using namespace Components;
 using namespace DateUtil;
@@ -133,6 +135,62 @@ static void drawDate(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
     drawText(gfx, b.x + PAD, b.y + 124, text, FONT_SMALL);
 }
 
+// "SW" for a wind direction in degrees (where it comes from), "" if unknown
+static const char* compassPoint(int degrees) {
+    static const char* const POINTS[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+    if (degrees < 0) {
+        return "";
+    }
+    return POINTS[((degrees % 360) * 2 + 45) / 90 % 8];
+}
+
+// "07:42" in local time, "--" if unknown
+static void formatClockTime(char* text, size_t size, time_t moment) {
+    if (moment == 0) {
+        snprintf(text, size, "--");
+        return;
+    }
+    struct tm local;
+    localtime_r(&moment, &local);
+    strftime(text, size, "%H:%M", &local);
+}
+
+// Feels like, wind, sunrise and sunset of the large and wide weather widgets:
+// value over caption (captionGap lower), in `columns` columns of colW from x,
+// rows rowStep apart
+static void drawWeatherDetails(Adafruit_GFX& gfx, const AppData& data, int16_t x, int16_t baseline,
+                               int16_t colW, int columns, int16_t rowStep, int16_t captionGap) {
+    char feels[8], wind[12], windCaption[12], sunrise[8], sunset[8];
+    formatTemp(feels, sizeof(feels), data.weatherValid, data.feelsLike);
+    if (data.weatherValid) {
+        snprintf(wind, sizeof(wind), "%d m/s", (int)lroundf(data.windSpeed));
+    } else {
+        snprintf(wind, sizeof(wind), "--");
+    }
+    const char* from = data.weatherValid ? compassPoint(data.windDeg) : "";
+    snprintf(windCaption, sizeof(windCaption), from[0] ? "Wind %s" : "Wind", from);
+    formatClockTime(sunrise, sizeof(sunrise), data.weatherValid ? data.sunrise : 0);
+    formatClockTime(sunset, sizeof(sunset), data.weatherValid ? data.sunset : 0);
+
+    struct Detail {
+        const char* value;
+        const char* caption;
+        bool degrees;
+    };
+    const Detail details[4] = {
+        {feels, "Feels like", true}, {wind, windCaption, false}, {sunrise, "Sunrise", false}, {sunset, "Sunset", false}};
+    for (int i = 0; i < 4; i++) {
+        int16_t dx = x + (i % columns) * colW;
+        int16_t dy = baseline + (i / columns) * rowStep;
+        if (details[i].degrees) {
+            drawTemperature(gfx, dx, dy, details[i].value, FONT_BODY);
+        } else {
+            drawText(gfx, dx, dy, details[i].value, FONT_BODY);
+        }
+        drawText(gfx, dx, dy + captionGap, details[i].caption, FONT_SMALL);
+    }
+}
+
 static void drawWeather(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
     char text[8];
     formatTemp(text, sizeof(text), data.weatherValid, data.outdoorTemp);
@@ -143,14 +201,29 @@ static void drawWeather(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
         drawText(gfx, b.x + PAD, b.y + 116, data.city, FONT_SMALL);
         return;
     }
-    // Cloud on the left, temperature and city on the right
+
+    // Cloud on the left, temperature and city on the right. The large and wide
+    // sizes add feels like, wind, sunrise and sunset: below, or to the right
+    // (from the third column of the grid, in line with the temperature).
     // TODO: Pick the icon from the weather code (sun, rain, snow...)
-    int16_t iconY = b.h >= 200 ? b.y + b.h / 2 - 50 : b.y + 44;
-    drawCloudIcon(gfx, b.x + PAD, iconY);
+    bool wide = b.w >= 600;
+    const int16_t detailsX = b.x + 2 * CELL_W;
+    drawCloudIcon(gfx, b.x + PAD, b.y + 44);
     int16_t textX = b.x + PAD + 160;
-    int16_t baseline = b.h >= 200 ? b.y + b.h / 2 + 6 : b.y + 90;
-    drawTemperature(gfx, textX, baseline, text, FONT_TEMP);
-    drawText(gfx, textX, baseline + 30, data.city, FONT_SMALL);
+    drawTemperature(gfx, textX, b.y + 90, text, FONT_TEMP);
+
+    char city[sizeof(data.city)];
+    strlcpy(city, data.city, sizeof(city));
+    fitText(gfx, city, (wide ? detailsX - PAD : b.right() - PAD) - textX, FONT_SMALL);
+    drawText(gfx, textX, b.y + 120, city, FONT_SMALL);
+
+    if (wide) {
+        // Captions in line with the city
+        drawWeatherDetails(gfx, data, detailsX, b.y + 90, (b.right() - PAD - detailsX) / 4, 4, 0, 30);
+    } else if (b.h >= 200) {
+        drawDottedLine(gfx, b.x + PAD, b.right() - PAD, b.y + 152);
+        drawWeatherDetails(gfx, data, b.x + PAD, b.y + 188, (b.w - 2 * PAD) / 2, 2, 66, 22);
+    }
 }
 
 static void co2Level(char* text, size_t size, const AppData& data) {
@@ -502,6 +575,202 @@ static void drawPrice(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
 
 // ---------- Page ----------
 
+// ---------- GitHub contribution graph ----------
+
+// "1,234"
+static void formatCount(char* text, size_t size, uint32_t value) {
+    if (value >= 1000) {
+        snprintf(text, size, "%lu,%03lu", (unsigned long)(value / 1000), (unsigned long)(value % 1000));
+    } else {
+        snprintf(text, size, "%lu", (unsigned long)value);
+    }
+}
+
+// One day. E-Ink has no greens and fine gray patterns blur together, so
+// GitHub's four levels become bigger black squares (the busiest fills the
+// cell); a day without contributions is a small dot, which keeps the grid.
+static void drawContributionCell(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t size, int level) {
+    int16_t side = level == 0 ? 2 : size - 2 * (4 - level);
+    int16_t inset = (size - side) / 2;
+    gfx.fillRect(x + inset, y + inset, side, side, COLOR_FG);
+}
+
+// The graph like on a GitHub profile: a column per week, Sunday at the top,
+// the newest week on the right. As many weeks as fit in w, centered.
+static void drawContributionGraph(Adafruit_GFX& gfx, const GitHubContributions& g, int16_t x, int16_t y,
+                                  int16_t w, int16_t pitch) {
+    const int16_t gap = 2;
+    int32_t firstDay = g.lastDay - g.dayCount + 1;
+    int32_t lastWeek = g.lastDay - GitHubData::rowOf(g.lastDay);  // Its Sunday
+    int32_t firstWeek = firstDay - GitHubData::rowOf(firstDay);
+    int weeksInData = int((lastWeek - firstWeek) / 7) + 1;
+    int fit = (w + gap) / pitch;
+    int weeks = weeksInData < fit ? weeksInData : fit;
+    int16_t left = x + (w - (weeks * pitch - gap)) / 2;
+
+    for (int column = 0; column < weeks; column++) {
+        int32_t sunday = lastWeek - 7 * (weeks - 1 - column);
+        for (int row = 0; row < 7; row++) {
+            int level = GitHubData::levelOn(g, sunday + row);
+            if (level >= 0) {  // Not before the data, not after today
+                drawContributionCell(gfx, left + column * pitch, y + row * pitch, pitch - gap, level);
+            }
+        }
+    }
+}
+
+static void drawGitHub(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
+    char text[80], total[16], today[16];
+    drawLabel(gfx, b, "GITHUB");
+    bool small = b.w < 300;
+
+    // A refused token shows even over an older graph: it won't update any more
+    if (!data.githubTokenSet || !data.githubValid || data.githubTokenRefused) {
+        bool fixOnPhone = !data.githubTokenSet || data.githubTokenRefused;
+        const char* line = !data.githubTokenSet     ? "Add a GitHub token"
+                         : data.githubTokenRefused  ? "Token not accepted"
+                         : data.wifiConnected       ? "Loading..."
+                                                    : "No Wi-Fi";
+        drawText(gfx, b.x + PAD, b.y + 72, line, FONT_SMALL_BOLD);
+        if (fixOnPhone) {
+            drawText(gfx, b.x + PAD, b.y + 98, small ? "on desk.local" : "on desk.local > Settings", FONT_SMALL);
+        }
+        return;
+    }
+
+    const GitHubContributions& g = data.github;
+    int streak = GitHubData::streak(g);
+    formatCount(total, sizeof(total), g.total);
+    snprintf(today, sizeof(today), "%d today", GitHubData::today(data));
+    bool large = b.h >= 200;
+    int16_t graphW = b.w - 2 * PAD;
+
+    // Next to the label: today, and in the wider sizes the year and the streak
+    if (b.w >= 600) {
+        char login[44] = "";
+        if (g.login[0]) {
+            snprintf(login, sizeof(login), "@%s, ", g.login);
+        }
+        snprintf(text, sizeof(text), "%s%s, %s in the last year, %d-day streak", login, today, total, streak);
+    } else if (!small && !large) {
+        snprintf(text, sizeof(text), "%s, %s in the last year", today, total);
+    } else {
+        strlcpy(text, today, sizeof(text));
+    }
+    fitText(gfx, text, graphW - measureText(gfx, "GITHUB", FONT_SMALL) - 16, FONT_SMALL);
+    drawTextRight(gfx, b.right() - PAD, b.y + LABEL_Y, text, FONT_SMALL);
+
+    if (!large) {
+        drawContributionGraph(gfx, g, b.x + PAD, b.y + 44, graphW, 13);
+        return;
+    }
+
+    // Large: bigger squares, then the year and the streak as big numbers
+    drawContributionGraph(gfx, g, b.x + PAD, b.y + 44, graphW, 16);
+    snprintf(text, sizeof(text), "%d", streak);
+    drawValue(gfx, b.x + PAD, b.y + 218, total, "in the last year", false);
+    drawValue(gfx, b.x + PAD + graphW / 2, b.y + 218, text, "day streak", false);
+}
+
+// ---------- Now playing ----------
+
+// Text cut to fit maxW, in the font given
+static void drawFitted(Adafruit_GFX& gfx, int16_t x, int16_t y, const char* text, int16_t maxW,
+                       const GFXfont* font) {
+    char line[96];
+    strlcpy(line, text, sizeof(line));
+    fitText(gfx, line, maxW, font);
+    drawText(gfx, x, y, line, font);
+}
+
+// "1:42 / 3:38", or "1:42" without a length (live)
+static void formatProgress(char* text, size_t size, const AppData& data) {
+    char now[12], length[12];
+    MusicData::formatTime(now, sizeof(now), MusicData::position(data));
+    if (data.musicDuration == 0) {
+        strlcpy(text, now, size);
+        return;
+    }
+    MusicData::formatTime(length, sizeof(length), data.musicDuration);
+    snprintf(text, size, "%s / %s", now, length);
+}
+
+// Outlined bar, filled up to the time into the song
+static void drawProgressBar(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h, const AppData& data) {
+    if (data.musicDuration == 0) {
+        return;
+    }
+    gfx.drawRect(x, y, w, h, COLOR_FG);
+    gfx.fillRect(x, y, int32_t(w) * MusicData::position(data) / data.musicDuration, h, COLOR_FG);
+}
+
+static void drawMusic(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
+    char text[96];
+    const int16_t innerW = b.w - 2 * PAD;
+    bool small = b.w < 300;
+
+    if (!MusicData::active(data)) {
+        drawLabel(gfx, b, "MUSIC");
+        drawText(gfx, b.x + PAD, b.y + 72, "Nothing playing", FONT_SMALL_BOLD);
+        if (MusicData::hasLast(data)) {
+            snprintf(text, sizeof(text), small ? "%s" : "Last: %s", data.musicTitle);
+            drawFitted(gfx, b.x + PAD, b.y + 98, text, innerW, FONT_SMALL);
+        } else if (!data.musicValid && !small) {
+            drawText(gfx, b.x + PAD, b.y + 98, "Add the browser extension", FONT_SMALL);
+        }
+        if (b.h >= 200) {
+            drawMusicIcon(gfx, b.cx() - 60, b.y + 132, 120, false);
+        }
+        return;
+    }
+
+    drawLabel(gfx, b, data.musicPlaying ? "NOW PLAYING" : "PAUSED");
+    formatProgress(text, sizeof(text), data);
+
+    if (small) {
+        drawFitted(gfx, b.x + PAD, b.y + 68, data.musicTitle, innerW, FONT_SMALL_BOLD);
+        drawFitted(gfx, b.x + PAD, b.y + 92, data.musicArtist, innerW, FONT_SMALL);
+        drawProgressBar(gfx, b.x + PAD, b.y + 104, innerW, 7, data);
+        drawText(gfx, b.x + PAD, b.y + 130, text, FONT_SMALL);
+        return;
+    }
+
+    if (b.h >= 200) {
+        // Large: note and source on top, then the song over the full width
+        drawMusicIcon(gfx, b.x + PAD, b.y + 44, 104, true);
+        drawText(gfx, b.x + PAD + 124, b.y + 88, "YouTube Music", FONT_SMALL_BOLD);
+        drawText(gfx, b.x + PAD + 124, b.y + 114, data.musicPlaying ? "Playing" : "Paused", FONT_BODY);
+        bool big = measureText(gfx, data.musicTitle, FONT_TEMP) <= innerW;
+        drawFitted(gfx, b.x + PAD, b.y + 184, data.musicTitle, innerW, big ? FONT_TEMP : FONT_BODY);
+        drawFitted(gfx, b.x + PAD, b.y + 212, data.musicArtist, innerW, FONT_BODY);
+        drawProgressBar(gfx, b.x + PAD, b.y + 228, innerW, 10, data);
+        drawText(gfx, b.x + PAD, b.y + 262, text, FONT_SMALL);
+        return;
+    }
+
+    // Medium and wide: note on the left, the song next to it
+    bool wide = b.w >= 600;
+    int16_t iconSize = wide ? 92 : 64;
+    drawMusicIcon(gfx, b.x + PAD, b.y + 40, iconSize, true);
+    int16_t x = b.x + PAD + iconSize + 16;
+    int16_t w = b.right() - PAD - x;
+    if (wide) {
+        // Times next to the label, so the bar can sit under the song
+        drawTextRight(gfx, b.right() - PAD, b.y + LABEL_Y, text, FONT_SMALL);
+        bool big = measureText(gfx, data.musicTitle, FONT_TEMP) <= w;
+        drawFitted(gfx, x, b.y + 80, data.musicTitle, w, big ? FONT_TEMP : FONT_BODY);
+        char byline[96];
+        snprintf(byline, sizeof(byline), data.musicAlbum[0] ? "%s - %s" : "%s", data.musicArtist, data.musicAlbum);
+        drawFitted(gfx, x, b.y + 106, byline, w, FONT_BODY);
+        drawProgressBar(gfx, x, b.y + 118, w, 8, data);
+    } else {
+        drawFitted(gfx, x, b.y + 66, data.musicTitle, w, FONT_BODY);
+        drawFitted(gfx, x, b.y + 90, data.musicArtist, w, FONT_SMALL);
+        drawProgressBar(gfx, x, b.y + 102, w, 7, data);
+        drawText(gfx, x, b.y + 128, text, FONT_SMALL);
+    }
+}
+
 void WidgetPage::draw(Adafruit_GFX& gfx, const AppData& data) {
     // No header and footer: the screen is for the widgets (the controls are
     // the same as on Home: press = menu, hold = refresh, touch = Home)
@@ -546,6 +815,8 @@ void WidgetPage::draw(Adafruit_GFX& gfx, const AppData& data) {
             case WIDGET_AGENDA: drawAgenda(gfx, b, data); break;
             case WIDGET_CLAUDE: drawClaude(gfx, b, data); break;
             case WIDGET_PRICE: drawPrice(gfx, b, data); break;
+            case WIDGET_GITHUB: drawGitHub(gfx, b, data); break;
+            case WIDGET_MUSIC: drawMusic(gfx, b, data); break;
             default: break;
         }
     }

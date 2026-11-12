@@ -6,9 +6,11 @@
 #include "pages/ElectricityPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/MusicPage.h"
 #include "pages/SettingsPage.h"
 #include "pages/SetupPage.h"
 #include "pages/PomodoroPage.h"
+#include "pages/PowerOffPage.h"
 #include "pages/SleepPage.h"
 #include "pages/WidgetPage.h"
 
@@ -25,9 +27,19 @@ public:
     void onPress();
     void onLongPress();
 
-    // Touch button: wakes up from sleep, otherwise switches between the
-    // two home pages (Home and the widget page)
+    // Touch button, call from handleInput().
+    // Tap (on release): wakes up from sleep, otherwise switches between the
+    // two home pages (Home and the widget page).
     void onTouch();
+    // Held for a few seconds: on a home page, shows the "turned off" page and
+    // asks main.cpp to power off (see readyToPowerOff); elsewhere like a tap.
+    void onTouchHold();
+    // A touch has started: counts as input, so slow downloads wait (inUse)
+    void onTouchDown() { noteInput(); }
+
+    // True once the "turned off" page is fully on the screen: main.cpp
+    // can stop everything now, E-Ink keeps the image without power
+    bool readyToPowerOff() const;
 
     // Call from updateDisplay(), does nothing if no redraw is needed.
     // Starts the E-Ink update and returns; while the panel is busy, new input
@@ -53,7 +65,7 @@ public:
     bool takeSetupCancel();              // Press on the setup page (only if Wi-Fi was set up before)
 
     // Show the sleep screen, any input wakes up to Home.
-    // Ignored during setup and while a Pomodoro timer is running.
+    // Ignored during setup, while turning off and while a Pomodoro timer is running.
     void enterSleep();
     bool isAsleep() const { return currentPage == SLEEP; }
 
@@ -68,10 +80,12 @@ private:
         MENU,
         CALENDAR,
         ELECTRICITY,
+        MUSIC,
         SETTINGS,
         SETUP,
         POMODORO,
-        SLEEP
+        SLEEP,
+        OFF        // "Turned off", input is ignored until the device is off
     };
 
     EinkDisplay* display = nullptr;
@@ -94,10 +108,18 @@ private:
     SleepPage sleepPage;
     CalendarPage calendarPage;
     ElectricityPage electricityPage;
+    MusicPage musicPage;
     SetupPage setupPage;
     SettingsPage settingsPage;
     WidgetPage widgetPage;
     PomodoroPage pomodoroPage;
+    PowerOffPage powerOffPage;
+
+    // Turning off (onTouchHold)
+    bool powerOffRequested = false;
+    bool offPageDrawn = false;      // The refresh with the OFF page has started
+    bool offTimeKnown = false;
+    struct tm offTime = {};         // Shown on the page, fixed when turning off
 
     Pomodoro pomodoro;
     int pomodoroDrawnMinutes = -1;

@@ -25,7 +25,7 @@ void UI::onRotate(int steps) {
     if (steps != 0) {
         noteInput();
     }
-    if (steps == 0 || wakeUp()) {
+    if (steps == 0 || currentPage == OFF || wakeUp()) {
         return;
     }
 
@@ -47,7 +47,7 @@ void UI::onRotate(int steps) {
 
 void UI::onPress() {
     noteInput();
-    if (wakeUp()) {
+    if (currentPage == OFF || wakeUp()) {
         return;
     }
 
@@ -92,6 +92,9 @@ void UI::onPress() {
             electricityPage.open();  // Today
             openPage(ELECTRICITY);
             break;
+        case MenuPage::MUSIC:
+            openPage(MUSIC);
+            break;
         case MenuPage::SETTINGS:
             settingsOpened = true;  // main.cpp fills in the address and QR code
             openPage(SETTINGS);
@@ -104,7 +107,7 @@ void UI::onPress() {
 
 void UI::onLongPress() {
     noteInput();
-    if (wakeUp()) {
+    if (currentPage == OFF || wakeUp()) {
         return;
     }
 
@@ -122,7 +125,7 @@ void UI::onLongPress() {
 
 void UI::onTouch() {
     noteInput();
-    if (wakeUp()) {
+    if (currentPage == OFF || wakeUp()) {
         return;
     }
 
@@ -132,6 +135,23 @@ void UI::onTouch() {
 
     // Switch between the two home pages; from anywhere else, the widget page
     openPage(currentPage == WIDGETS ? HOME : WIDGETS);
+}
+
+void UI::onTouchHold() {
+    if (currentPage != HOME && currentPage != WIDGETS) {
+        onTouch();  // Power off only from a home page
+        return;
+    }
+    noteInput();
+
+    offTimeKnown = data->timeValid;
+    offTime = data->now;
+    powerOffRequested = true;
+    openPage(OFF);
+}
+
+bool UI::readyToPowerOff() const {
+    return powerOffRequested && currentPage == OFF && offPageDrawn && display != nullptr && !display->isBusy();
 }
 
 // ---------- Pomodoro ----------
@@ -182,7 +202,8 @@ void UI::onPomodoroLongPress() {
 
 void UI::updatePomodoro() {
     // Phase ended by itself: show the alert or the next session from any page
-    if (pomodoro.tick(millis())) {
+    // (but not over the "turned off" page)
+    if (pomodoro.tick(millis()) && currentPage != OFF) {
         openPage(POMODORO);
     }
 
@@ -216,6 +237,9 @@ void UI::update() {
     }
 
     updatePomodoro();
+    if (currentPage == OFF && offPageDrawn) {
+        redrawNeeded = false;  // Nothing on it changes (the time is fixed): no second refresh
+    }
     if (!redrawNeeded) {
         return;
     }
@@ -245,6 +269,9 @@ void UI::update() {
         case ELECTRICITY:
             electricityPage.draw(*display, *data);
             break;
+        case MUSIC:
+            musicPage.draw(*display, *data);
+            break;
         case SETUP:
             setupPage.draw(*display, *data);
             break;
@@ -254,6 +281,10 @@ void UI::update() {
             break;
         case SLEEP:
             sleepPage.draw(*display, *data);
+            break;
+        case OFF:
+            powerOffPage.draw(*display, offTimeKnown ? &offTime : nullptr);
+            offPageDrawn = true;
             break;
     }
 
@@ -268,8 +299,8 @@ bool UI::takeRefreshRequest() {
 }
 
 void UI::enterSleep() {
-    if (currentPage == SETUP || pomodoro.isActive()) {
-        return;  // Keep the QR code or the timer visible
+    if (currentPage == SETUP || currentPage == OFF || pomodoro.isActive()) {
+        return;  // Keep the QR code, the "turned off" page or the timer visible
     }
     if (currentPage != SLEEP) {
         openPage(SLEEP);
@@ -347,11 +378,20 @@ void UI::showNextPage() {
             }
             break;
         case ELECTRICITY:
+            openPage(MUSIC);
+            break;
+        case MUSIC:
             openPage(SLEEP);
             break;
         case SETUP:
             break;  // Setup stays until it is done
         case SLEEP:
+            // Only shown here: powerOffRequested stays false, so nothing turns off
+            offTimeKnown = data->timeValid;
+            offTime = data->now;
+            openPage(OFF);
+            break;
+        case OFF:
             openPage(HOME);
             break;
     }
@@ -368,4 +408,5 @@ bool UI::wakeUp() {
 void UI::openPage(Page page) {
     currentPage = page;
     redrawNeeded = true;
+    offPageDrawn = false;
 }

@@ -13,15 +13,21 @@
 #include "Components.h"
 #include "../app/CalendarData.h"
 #include "../app/DateUtil.h"
+#include "../app/GitHubData.h"
 #include "pages/CalendarPage.h"
 #include "pages/ElectricityPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
 #include "pages/PomodoroPage.h"
+#include "pages/PowerOffPage.h"
 #include "pages/SettingsPage.h"
 #include "pages/SetupPage.h"
 #include "pages/WidgetPage.h"
 #include "pages/SleepPage.h"
+#include "../../src/services/GitHubParser.h"
+#include "../../src/services/NowPlaying.h"
+#include "../app/MusicData.h"
+#include "pages/MusicPage.h"
 #include "../../src/services/IcsParser.h"
 
 static bool savePbm(GFXcanvas1& canvas, const char* path) {
@@ -53,6 +59,9 @@ static AppData demoData() {
 
     data.weatherValid = true;
     data.outdoorTemp = 8;
+    data.feelsLike = 5.4f;
+    data.windSpeed = 4.2f;
+    data.windDeg = 225;  // From the south-west
 
     data.sensorValid = true;
     data.indoorTemp = 22;
@@ -89,6 +98,10 @@ static AppData demoData() {
         }
     }
     data.pricesValid = true;
+
+    // Kuopio on 5 Oct: sunrise 07:35, sunset 18:41
+    data.sunrise = dayStart + 7 * 3600 + 35 * 60;
+    data.sunset = dayStart + 18 * 3600 + 41 * 60;
 
     // Calendar events from the Figma designs
     struct Sample {
@@ -426,6 +439,200 @@ static void saveCalendarPages(GFXcanvas1& canvas, const AppData& source) {
     }
 }
 
+// ---------- GitHub ----------
+
+// An answer shaped like GitHub's GraphQL one: `days` days up to lastDay in
+// weeks from Sunday. Weekdays are busier; the newest `streakDays` days all
+// have contributions (today: 3, level 2), the day before them none.
+static std::string demoGitHubAnswer(int32_t lastDay, int days, int streakDays) {
+    static const char* const LEVELS[5] = {"NONE", "FIRST_QUARTILE", "SECOND_QUARTILE", "THIRD_QUARTILE",
+                                          "FOURTH_QUARTILE"};
+    std::string json = "{\"data\":{\"viewer\":{\"login\":\"octocat\",\"contributionsCollection\":"
+                       "{\"contributionCalendar\":{\"totalContributions\":1234,\"weeks\":[";
+    unsigned seed = 11;
+    bool weekOpen = false;
+    char text[128];
+    for (int32_t day = lastDay - days + 1; day <= lastDay; day++) {
+        int age = int(lastDay - day);
+        int level;
+        if (age < streakDays) {
+            level = age == 0 ? 2 : 1 + age % 4;
+        } else if (age == streakDays) {
+            level = 0;
+        } else {
+            seed = seed * 1103515245 + 12345;
+            int r = (seed >> 16) % 10;
+            bool weekend = DateUtil::weekday(day) >= 5;
+            level = weekend ? (r < 7 ? 0 : 1) : (r < 3 ? 0 : r < 5 ? 1 : r < 7 ? 2 : r < 9 ? 3 : 4);
+        }
+        int count = level == 0 ? 0 : age == 0 ? 3 : level * 2;
+
+        if (!weekOpen) {
+            json += "{\"contributionDays\":[";
+            weekOpen = true;
+        } else if (GitHubData::rowOf(day) == 0) {
+            json += "]},{\"contributionDays\":[";  // A new week from Sunday
+        } else {
+            json += ",";
+        }
+        int year, month, dayOfMonth;
+        DateUtil::civilFromDays(day, year, month, dayOfMonth);
+        snprintf(text, sizeof(text),
+                 "{\"contributionCount\":%d,\"contributionLevel\":\"%s\",\"date\":\"%04d-%02d-%02d\"}", count,
+                 LEVELS[level], year, month, dayOfMonth);
+        json += text;
+    }
+    json += "]}]}}}}}";
+    return json;
+}
+
+// Reads a demo answer into data (for the widget pictures), checking the parser on the way
+static void loadDemoGitHub(AppData& data) {
+    int failedBefore = checksFailed;
+    int32_t today = DateUtil::dayOf(data.now);
+    JsonDocument doc;
+    GitHubContributions& g = data.github;
+
+    check(!deserializeJson(doc, demoGitHubAnswer(today, GITHUB_MAX_DAYS, 6)), "GitHub demo answer is JSON");
+    check(readContributions(doc.as<JsonObjectConst>(), g), "GitHub answer is read");
+    check(strcmp(g.login, "octocat") == 0 && g.total == 1234, "login and yearly total");
+    check(g.lastDay == today && g.dayCount == GITHUB_MAX_DAYS, "every day placed, up to today");
+    check(g.lastDayCount == 3 && GitHubData::levelOn(g, today) == 2, "today's count and level");
+    check(GitHubData::levelOn(g, today + 1) == -1 && GitHubData::levelOn(g, today - GITHUB_MAX_DAYS) == -1,
+          "days outside the data have no level");
+    check(GitHubData::streak(g) == 6, "6-day streak");
+    data.githubTokenSet = true;
+    data.githubValid = true;
+    check(GitHubData::today(data) == 3, "3 contributions today");
+
+    // Nothing yet today doesn't end the streak, the day isn't over
+    GitHubContributions noneToday = g;
+    noneToday.levels[noneToday.dayCount - 1] = 0;
+    check(GitHubData::streak(noneToday) == 5, "an empty today keeps yesterday's streak");
+
+    // More days than fit: the newest are kept
+    GitHubContributions longer;
+    deserializeJson(doc, demoGitHubAnswer(today, GITHUB_MAX_DAYS + 9, 6));
+    check(readContributions(doc.as<JsonObjectConst>(), longer) && longer.dayCount == GITHUB_MAX_DAYS &&
+              longer.lastDay == today && longer.lastDayCount == 3 && GitHubData::streak(longer) == 6,
+          "a longer answer keeps the newest days");
+
+    // A refused token: GraphQL answers with errors and no data
+    GitHubContributions refused;
+    deserializeJson(doc, "{\"errors\":[{\"message\":\"Bad credentials\"}]}");
+    check(!readContributions(doc.as<JsonObjectConst>(), refused), "an error answer is not read");
+
+    if (checksFailed == failedBefore) {
+        printf("GitHub checks passed\n");
+    }
+}
+
+// ---------- Now playing ----------
+
+// A message from the extension, as main.cpp's applyNowPlaying() stores it,
+// received `ago` seconds before data.epoch
+static void playSong(AppData& data, const char* json, long ago) {
+    NowPlaying song;
+    check(parseNowPlaying(json, song), "music message is read");
+    data.musicValid = true;
+    data.musicOpen = song.title[0] != '\0';
+    data.musicPlaying = song.playing;
+    strcpy(data.musicTitle, song.title);
+    strcpy(data.musicArtist, song.artist);
+    strcpy(data.musicAlbum, song.album);
+    data.musicPosition = song.position;
+    data.musicDuration = song.duration;
+    data.musicUpdated = data.epoch - ago;
+}
+
+static void checkNowPlaying(AppData data) {
+    int failedBefore = checksFailed;
+    NowPlaying song;
+
+    check(!parseNowPlaying("{\"artist\":\"x\"}", song), "a message without title or state is refused");
+    check(!parseNowPlaying("not json", song), "not JSON is refused");
+    check(parseNowPlaying("{\"title\":\"Beyonc\xC3\xA9\",\"playing\":false}", song) &&
+              strcmp(song.title, "Beyonc?") == 0,
+          "what the extension didn't make ASCII becomes '?'");
+    check(parseNowPlaying("{\"title\":\"x\",\"playing\":true,\"position\":500,\"duration\":200}", song) &&
+              song.position == 200,
+          "the position is kept inside the song");
+
+    playSong(data, "{\"title\":\"x\",\"playing\":true,\"position\":100,\"duration\":200}", 40);
+    check(MusicData::active(data) && MusicData::position(data) == 140, "playing: the time counts on");
+    data.musicPlaying = false;
+    check(MusicData::position(data) == 100, "paused: the time stays");
+    data.musicPlaying = true;
+    data.musicUpdated = data.epoch - 59;
+    check(MusicData::position(data) == 159 && MusicData::active(data), "still active just before the timeout");
+    data.musicUpdated = data.epoch - MUSIC_STALE_S - 1;
+    check(!MusicData::active(data) && MusicData::hasLast(data), "no message for a while: nothing plays");
+    playSong(data, "{\"title\":\"x\",\"playing\":true,\"position\":190,\"duration\":200}", 50);
+    check(MusicData::position(data) == 200, "the time stops at the end of the song");
+
+    char text[16];
+    MusicData::formatTime(text, sizeof(text), 3723);
+    check(strcmp(text, "1:02:03") == 0, "hours in long times");
+
+    if (checksFailed == failedBefore) {
+        printf("Music checks passed\n");
+    }
+}
+
+static void saveMusicPages(GFXcanvas1& canvas, const AppData& source) {
+    static AppData data;  // Large because of the event list
+    data = source;
+    checkNowPlaying(data);
+    MusicPage page;
+    WidgetPage widgets;
+
+    // Playing, 2:22 of 4:38 (sent 40 s ago at 1:42)
+    playSong(data,
+             "{\"title\":\"Fourth of July\",\"artist\":\"Sufjan Stevens\",\"album\":\"Carrie & Lowell\","
+             "\"playing\":true,\"position\":102,\"duration\":278}",
+             40);
+    canvas.fillScreen(COLOR_BG);
+    page.draw(canvas, data);
+    savePbm(canvas, "out/music.pbm");
+    data.widgetCount = layoutWidgets("music:L,music:M,music:S,music:W", data.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgets.draw(canvas, data);
+    savePbm(canvas, "out/home2-music.pbm");
+    MenuPage menu;
+    menu.select(MenuPage::MUSIC);
+    canvas.fillScreen(COLOR_BG);
+    menu.draw(canvas, data);
+    savePbm(canvas, "out/menu-music.pbm");
+
+    // Paused, with a title too long for the big font
+    playSong(data,
+             "{\"title\":\"Hey Jude - Remastered 2015 (Live at the Very Long Concert Hall)\","
+             "\"artist\":\"The Beatles\",\"album\":\"\",\"playing\":false,\"position\":30,\"duration\":431}",
+             5);
+    canvas.fillScreen(COLOR_BG);
+    page.draw(canvas, data);
+    savePbm(canvas, "out/music-paused.pbm");
+    canvas.fillScreen(COLOR_BG);
+    widgets.draw(canvas, data);
+    savePbm(canvas, "out/home2-music-paused.pbm");
+
+    // The browser was closed: nothing playing, the last song stays
+    data.musicUpdated = data.epoch - 10 * 60;
+    canvas.fillScreen(COLOR_BG);
+    page.draw(canvas, data);
+    savePbm(canvas, "out/music-empty.pbm");
+    canvas.fillScreen(COLOR_BG);
+    widgets.draw(canvas, data);
+    savePbm(canvas, "out/home2-music-empty.pbm");
+
+    // The extension never sent anything
+    data.musicValid = false;
+    data.musicTitle[0] = '\0';
+    canvas.fillScreen(COLOR_BG);
+    page.draw(canvas, data);
+    savePbm(canvas, "out/music-none.pbm");
+}
+
 int main() {
     setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4", 1);  // Finnish time, like the device
     tzset();
@@ -458,8 +665,18 @@ int main() {
     sleep.draw(canvas, night);
     savePbm(canvas, "out/sleep.pbm");
 
+    // Turned off (touch button held on Home), and without a synced clock
+    PowerOffPage off;
+    canvas.fillScreen(COLOR_BG);
+    off.draw(canvas, &night.now);
+    savePbm(canvas, "out/power-off.pbm");
+    canvas.fillScreen(COLOR_BG);
+    off.draw(canvas, nullptr);
+    savePbm(canvas, "out/power-off-no-time.pbm");
+
     savePomodoroPages(canvas, data);
     saveCalendarPages(canvas, data);
+    saveMusicPages(canvas, data);
 
     // 10:35, for the widget and electricity pages below
     AppData calendarData = data;
@@ -554,6 +771,51 @@ int main() {
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-price-wide.pbm");
+
+    // GitHub in every size; then without a token, and loading
+    static AppData githubData;  // Large because of the event list
+    githubData = widgetData;
+    loadDemoGitHub(githubData);
+    githubData.widgetCount = layoutWidgets("github:W,github:L,github:M,github:S", githubData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, githubData);
+    savePbm(canvas, "out/home2-github.pbm");
+    githubData.widgetCount = layoutWidgets("github:M,github:S,github:S,github:W", githubData.widgets, MAX_WIDGETS);
+    githubData.githubTokenSet = false;
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, githubData);
+    savePbm(canvas, "out/home2-github-none.pbm");
+    githubData.githubTokenSet = true;
+    githubData.githubValid = false;
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, githubData);
+    savePbm(canvas, "out/home2-github-loading.pbm");
+    githubData.githubTokenRefused = true;
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, githubData);
+    savePbm(canvas, "out/home2-github-refused.pbm");
+
+    // Weather in every size: large and wide add feels like, wind, sunrise, sunset
+    AppData weatherData = widgetData;
+    weatherData.widgetCount = layoutWidgets("weather:L,weather:M,weather:S,weather:W", weatherData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, weatherData);
+    savePbm(canvas, "out/home2-weather.pbm");
+
+    // Calm, polar night (no sunrise or sunset) and a long city name; then no weather yet
+    weatherData.windSpeed = 0.3f;
+    weatherData.windDeg = -1;
+    weatherData.sunrise = weatherData.sunset = 0;
+    weatherData.outdoorTemp = -24;
+    weatherData.feelsLike = -31;
+    strcpy(weatherData.city, "Kilpisjarvi, Enontekio");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, weatherData);
+    savePbm(canvas, "out/home2-weather-polar.pbm");
+    weatherData.weatherValid = false;
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, weatherData);
+    savePbm(canvas, "out/home2-weather-none.pbm");
 
     // Old numbers and no numbers yet
     widgetData.claudeUpdated = widgetData.epoch - 95 * 60;

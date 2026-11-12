@@ -8,9 +8,10 @@ const char* const DEFAULT_WIDGETS = "agenda:M,claude:M,next:M,co2:S,date:S,price
 namespace {
 
 const char* const CODES[WIDGET_TYPE_COUNT] = {"clock", "date", "weather", "indoor", "co2",
-                                              "next",  "agenda", "claude", "price"};
-const char* const NAMES[WIDGET_TYPE_COUNT] = {"Clock",      "Date",  "Weather", "Indoor",     "CO2",
-                                              "Next event", "Today", "Claude",  "Electricity"};
+                                              "next",  "agenda", "claude", "price", "github", "music"};
+const char* const NAMES[WIDGET_TYPE_COUNT] = {"Clock",      "Date",  "Weather", "Indoor",      "CO2",
+                                              "Next event", "Today", "Claude",  "Electricity", "GitHub",
+                                              "Now playing"};
 const char SIZE_CODES[SIZE_COUNT] = {'S', 'M', 'L', 'W'};
 const uint8_t COLS[SIZE_COUNT] = {1, 2, 2, 4};
 const uint8_t ROWS[SIZE_COUNT] = {1, 1, 2, 1};
