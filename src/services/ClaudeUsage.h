@@ -3,7 +3,7 @@
 #include <time.h>
 
 // Claude plan usage (claude.ai Pro/Max), as sent to http://desk.local/claude
-// by the browser extension in tools/claude-usage-extension:
+// by the browser extension in tools/desk-extension:
 //   {"session": 54, "session_resets": "2026-11-04T17:30:00.29+00:00",
 //    "weekly": 29, "weekly_resets": "2026-11-06T20:00:00.29+00:00"}
 // There is no official API for these numbers; the extension reads the

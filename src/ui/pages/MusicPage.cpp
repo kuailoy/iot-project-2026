@@ -69,7 +69,7 @@ static void drawNothing(Adafruit_GFX& gfx, const AppData& data) {
         drawText(gfx, TEXT_X, 256, "in Chrome and it will show up here.", FONT_SMALL_BOLD);
     } else {
         drawText(gfx, TEXT_X, 230, "Add the browser extension from", FONT_SMALL_BOLD);
-        drawText(gfx, TEXT_X, 256, "tools/now-playing-extension, then", FONT_SMALL_BOLD);
+        drawText(gfx, TEXT_X, 256, "tools/desk-extension, then", FONT_SMALL_BOLD);
         drawText(gfx, TEXT_X, 282, "play something in YouTube Music.", FONT_SMALL_BOLD);
     }
 }

@@ -107,9 +107,13 @@ all from the same OpenWeatherMap request.
 
 **Claude widget**: how much of your Claude plan's 5-hour session and weekly limit is used, with reset times.
 Claude has no official API for this, so a small Chrome extension reads it in your logged-in browser and sends
-only the numbers to the display (`POST /claude`). Setup: `tools/claude-usage-extension/README.md`.
+only the numbers to the display (`POST /claude`). Setup: `tools/desk-extension/README.md`.
 
 **Electricity widget**: the spot price now and whether it is cheap; bigger sizes add the day's chart and the cheapest 3 hours.
+
+**Now playing widget** and the **Music** page (menu → Music): what YouTube Music plays in your browser, with a progress bar,
+sent by the same Chrome extension (`POST /music`). Setup: `tools/desk-extension/README.md`.
+Code: `src/services/NowPlaying.*` (message), `src/app/MusicData.h`, `src/ui/pages/MusicPage.cpp`, `drawMusic()` in `src/ui/pages/WidgetPage.cpp`.
 
 **GitHub widget**: your contribution graph of the last year, like on your GitHub profile (a column per week, Sunday at the top).
 The screen has no greens, so busier days are bigger black squares and days without contributions are small dots.

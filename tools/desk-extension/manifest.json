@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Desk display",
+  "version": "1.0",
+  "description": "Sends your Claude plan usage and what YouTube Music plays in this browser to the desk display.",
+  "permissions": ["alarms", "storage"],
+  "host_permissions": ["https://claude.ai/*", "http://*/claude", "http://*/music"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Desk display", "default_popup": "options.html" },
+  "options_page": "options.html",
+  "content_scripts": [
+    { "matches": ["https://music.youtube.com/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}

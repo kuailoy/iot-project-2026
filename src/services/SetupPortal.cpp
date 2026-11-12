@@ -882,7 +882,7 @@ void SetupPortal::handleSettings() {
     }
     body += "<div class=head><span>Claude usage</span></div><div class=card><div class=row>"
             "<span>Browser extension</span><span>" + claudeStatus + "</span></div></div>"
-            "<p class=note>Sent by the Chrome extension in tools/claude-usage-extension, "
+            "<p class=note>Sent by the Chrome extension in tools/desk-extension, "
             "for the Claude widget.</p>";
 
     body += "<form method=post action=/settings>";
@@ -1097,8 +1097,8 @@ void SetupPortal::handleWifiStatus() {
 
 // ---------- Claude usage (browser extension) ----------
 
-// The extensions (tools/claude-usage-extension, tools/now-playing-extension) run
-// in the user's browser and post JSON. Only extensions get CORS permission, web
+// The extension (tools/desk-extension) runs
+// in the user's browser and posts JSON. Only extensions get CORS permission, web
 // pages don't: then a page can't send JSON here either, the browser asks first
 // (OPTIONS) and stops.
 void SetupPortal::allowExtension() {

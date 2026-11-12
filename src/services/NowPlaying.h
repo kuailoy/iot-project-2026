@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // What YouTube Music plays in the user's browser, as sent to
-// http://desk.local/music by the extension in tools/now-playing-extension:
+// http://desk.local/music by the extension in tools/desk-extension:
 //   {"title": "Fourth of July", "artist": "Sufjan Stevens", "album": "Carrie & Lowell",
 //    "playing": true, "position": 102, "duration": 218}
 // Every change is sent, and every 15 s while the tab is open (see MusicData.h).
