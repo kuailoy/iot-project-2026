@@ -42,6 +42,12 @@ void drawTextRight(Adafruit_GFX& gfx, int16_t rightX, int16_t y, const char* tex
 void drawTextCentered(Adafruit_GFX& gfx, int16_t centerX, int16_t y, const char* text,
                       const GFXfont* font, uint16_t color = COLOR_FG);
 
+// Width of the text in pixels
+int16_t measureText(Adafruit_GFX& gfx, const char* text, const GFXfont* font);
+
+// Shorten text in place so it fits in maxWidth pixels, ending with ".."
+void fitText(Adafruit_GFX& gfx, char* text, int16_t maxWidth, const GFXfont* font);
+
 // GFX fonts have no degree sign, so it is drawn as a small circle
 void drawTemperature(Adafruit_GFX& gfx, int16_t x, int16_t y, const char* value,
                      const GFXfont* font);
@@ -57,13 +63,22 @@ void drawWifiIcon(Adafruit_GFX& gfx, int16_t cx, int16_t bottomY,
                   bool connected);                                      // 36x28, centered on cx
 void drawCloudIcon(Adafruit_GFX& gfx, int16_t x, int16_t y,
                    int16_t width = 142);                             // 142x84 at default width
-void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y);     // 46x50
+void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y,
+                      bool check = false);                          // 46x50
 
 // Clock, date, status icons and the line below them
 void drawHeader(Adafruit_GFX& gfx, const AppData& data);
 
 // Line and centered input hints at the bottom of the screen
 void drawFooter(Adafruit_GFX& gfx, const char* hints);
+
+// Bar chart of 24 hourly values (electricity prices). Bars are outlined;
+// hours fillFrom .. fillFrom + fillCount - 1 are solid (the cheapest window),
+// a small triangle points at markerHour (-1 = none). With labels, hour
+// numbers are written under the chart. Bars grow up from y + h.
+void drawPriceChart(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h,
+                    const float* values, const bool* present, int markerHour,
+                    int fillFrom, int fillCount, bool labels);
 
 // One row of a list, colors inverted when selected
 void drawMenuRow(Adafruit_GFX& gfx, int16_t y, int16_t h, const char* label,

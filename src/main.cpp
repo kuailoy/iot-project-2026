@@ -6,6 +6,8 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <time.h>
+#include <memory>
+#include <new>
 
 // Display: E-Ink
 #include <Adafruit_GFX.h>
@@ -25,17 +27,17 @@
 #include "pins.h"
 #include "app/AppData.h"
 #include "services/WeatherService.h"
+#include "services/CalendarService.h"
+#include "services/ElectricityService.h"
+#include "app/DateUtil.h"
+#include "app/Settings.h"
+#include "services/SetupPortal.h"
 #include "ui/UI.h"
 #include "display/EinkDisplay.h"
 #include "display/EinkBenchmark.h"
 
-// Wi-Fi credentials are injected from .env.local by the PlatformIO pre-script.
-#ifndef WIFI_SSID
-#define WIFI_SSID ""
-#endif
-#ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD ""
-#endif
+// API keys are injected from .env.local by the PlatformIO pre-script.
+// Wi-Fi and the calendar link are set on the setup page (Settings, SetupPortal).
 #ifndef WEATHER_API_KEY
 #define WEATHER_API_KEY ""
 #endif
@@ -45,12 +47,13 @@
 const char* NTP_SERVER = "pool.ntp.org";
 const char* TIME_ZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";  // Finland, with summer time
 
-// Location for the weather forecast (Kuopio)
-const float LATITUDE = 62.89;
-const float LONGITUDE = 27.68;
+// The weather city is chosen on the settings page (desk.local)
 
 const unsigned long WEATHER_INTERVAL_MS = 15 * 60 * 1000UL;
 const unsigned long WEATHER_RETRY_MS = 60 * 1000UL;
+const unsigned long CALENDAR_INTERVAL_MS = 30 * 60 * 1000UL;
+const unsigned long CALENDAR_RETRY_MS = 2 * 60 * 1000UL;
+
 const unsigned long SENSOR_INTERVAL_MS = 30 * 1000UL;
 const unsigned long LONG_PRESS_MS = 800;
 const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
@@ -72,6 +75,12 @@ SensirionI2cScd4x scd4x;
 Adafruit_seesaw rotary;
 AppData appData;
 UI ui;
+Settings settings;      // Home Wi-Fi and calendar link, saved in flash
+SetupPortal portal;     // Wi-Fi setup page, runs when needed
+bool downloadNow = false;  // Fetch weather and calendar on the next loop
+
+// Set by the touch interrupt, so a tap during a slow E-Ink refresh is not lost
+volatile bool touchPending = false;
 
 bool sensorFound = false;
 bool encoderFound = false;
@@ -83,6 +92,7 @@ void initI2C();
 void initDisplay();
 void initSensor();
 void initEncoder();
+void initTouch();
 void initWiFi();
 void initTime();
 
@@ -91,7 +101,18 @@ void readSensor();
 void updateDisplay();
 void handleInput();
 void updateWeather(bool force);
+void updateCalendar(bool force);
+void updatePrices(bool force);
 void showPagesInTurn();
+void connectWiFi(bool wait);
+void keepWiFi();
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
+void startSetup();
+void updateSetup();
+void applyWidgets();
+void applySettingsChanges();
+void applyClaudeUsage(const ClaudeUsage& usage);
+void fillSettingsPage();
 
 // ---------- Setup ----------
 
@@ -113,6 +134,7 @@ void setup() {
 
     initSensor();
     initEncoder();
+    initTouch();
     initWiFi();
     initTime();
 }
@@ -125,12 +147,18 @@ void loop() {
 #else
     handleInput();
 #endif
+    updateSetup();
+    keepWiFi();
     updateTime();
     readSensor();
-    updateWeather(ui.takeRefreshRequest());
+    bool refresh = ui.takeRefreshRequest() || downloadNow;
+    downloadNow = false;
+    updateWeather(refresh);
+    updateCalendar(refresh);
+    updatePrices(refresh);
     updateDisplay();
 
-    delay(50);
+    delay(10);
 }
 
 // ---------- Initialization ----------
@@ -177,15 +205,42 @@ void initEncoder() {
     Serial.println("Rotary encoder found");
 }
 
+void IRAM_ATTR onTouchInterrupt() {
+    touchPending = true;
+}
+
+void initTouch() {
+    // Pull-down keeps the pin LOW if the module is not connected
+    pinMode(TOUCH_PIN, INPUT_PULLDOWN);
+    attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), onTouchInterrupt, RISING);
+    Serial.println("Touch button ready");
+}
+
 void initWiFi() {
-    if (strlen(WIFI_SSID) == 0) {
-        Serial.println("Wi-Fi skipped: WIFI_SSID is not set in .env.local");
+    SettingsStore::load(settings);
+    applyWidgets();
+    strlcpy(appData.city, settings.cityName.c_str(), sizeof(appData.city));
+    portal.setWeatherKey(WEATHER_API_KEY);
+
+    // First start (or after a reset): no home Wi-Fi yet, show the setup page
+    if (!settings.hasWifi()) {
+        Serial.println("Wi-Fi: not set up yet");
+        startSetup();
         return;
     }
+    WiFi.onEvent(onWiFiEvent);
+    connectWiFi(true);
+}
 
-    Serial.printf("Connecting to %s", WIFI_SSID);
+// Connect to the saved home Wi-Fi. wait = block up to 15 s (at start-up)
+void connectWiFi(bool wait) {
+    Serial.printf("Connecting to %s", settings.wifiSsid.c_str());
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(settings.wifiSsid.c_str(), settings.wifiPassword.c_str());
+    if (!wait) {
+        Serial.println();
+        return;  // updateTime() notices when it is connected
+    }
 
     // Give up after 15 s so the device still starts without Wi-Fi
     unsigned long start = millis();
@@ -196,6 +251,184 @@ void initWiFi() {
 
     appData.wifiConnected = (WiFi.status() == WL_CONNECTED);
     Serial.println(appData.wifiConnected ? " connected" : " failed");
+}
+
+// Log why the Wi-Fi was lost or could not connect (once per new reason).
+// Common reasons: 201 network not found, 15 / 204 wrong password,
+// 200 / 8 the network went away. Runs in the Wi-Fi task.
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+    static int lastReason = -1;
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        int reason = info.wifi_sta_disconnected.reason;
+        if (reason != lastReason) {
+            Serial.printf("Wi-Fi: not connected, reason %d\n", reason);
+            lastReason = reason;
+        }
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+        Serial.printf("Wi-Fi: connected, IP %s\n", IPAddress(info.got_ip.ip_info.ip.addr).toString().c_str());
+        lastReason = -1;
+    }
+}
+
+// The ESP32 gives up after some errors (e.g. the network was not found),
+// so if the home Wi-Fi is lost, try again every 30 s. Not during setup or
+// while the settings page moves the device to another network.
+void keepWiFi() {
+    static unsigned long lastTry = 0;
+    const unsigned long RETRY_MS = 30000;
+    if (WiFi.status() == WL_CONNECTED || !settings.hasWifi() || portal.active() || portal.switchingWifi()) {
+        lastTry = millis();  // The first try comes 30 s after the Wi-Fi is lost
+        return;
+    }
+    if (millis() - lastTry < RETRY_MS) {
+        return;
+    }
+    lastTry = millis();
+    Serial.printf("Wi-Fi: trying %s again\n", settings.wifiSsid.c_str());
+    WiFi.disconnect();
+    WiFi.begin(settings.wifiSsid.c_str(), settings.wifiPassword.c_str());
+}
+
+// Turn on the setup Wi-Fi and show the setup page with its QR code
+void startSetup() {
+    portal.begin(settings);
+
+    appData.setupActive = true;
+    appData.setupCanCancel = settings.hasWifi();
+    appData.wifiConnected = false;
+    strlcpy(appData.setupNetwork, portal.networkName().c_str(), sizeof(appData.setupNetwork));
+    strlcpy(appData.setupPassword, settings.apPassword.c_str(), sizeof(appData.setupPassword));
+    strlcpy(appData.setupStatus, portal.statusText().c_str(), sizeof(appData.setupStatus));
+    appData.qrSize =
+        makeWifiQrCode(portal.networkName(), settings.apPassword, appData.qrCode, sizeof(appData.qrCode));
+    if (appData.qrSize == 0) {
+        Serial.println("Setup: QR code could not be made");
+    }
+    ui.openSetup();
+}
+
+// Place the saved widgets of the second home page
+void applyWidgets() {
+    appData.widgetCount = layoutWidgets(settings.widgets.c_str(), appData.widgets, MAX_WIDGETS);
+    ui.requestRedraw();
+}
+
+// Address and QR code of the settings web page, for the Settings screen
+void fillSettingsPage() {
+    if (WiFi.status() == WL_CONNECTED) {
+        String ip = WiFi.localIP().toString();
+        strlcpy(appData.deviceIp, ip.c_str(), sizeof(appData.deviceIp));
+        strlcpy(appData.wifiName, settings.wifiSsid.c_str(), sizeof(appData.wifiName));
+        appData.qrSize = makeQrCode("http://" + ip + "/", appData.qrCode, sizeof(appData.qrCode));
+    } else {
+        appData.deviceIp[0] = '\0';
+        appData.qrSize = 0;
+    }
+    ui.requestRedraw();
+}
+
+// New Claude plan numbers from the browser extension. The screen is only
+// redrawn when something it shows changes (E-Ink refreshes are slow).
+void applyClaudeUsage(const ClaudeUsage& usage) {
+    auto percent = [](float value) -> uint8_t {
+        return uint8_t(value < 0 ? 0 : value > 100 ? 100 : lroundf(value));
+    };
+    uint8_t session = percent(usage.sessionPercent);
+    uint8_t weekly = percent(usage.weeklyPercent);
+    bool changed = !appData.claudeValid || session != appData.claudeSession || weekly != appData.claudeWeekly ||
+                   usage.sessionResets != appData.claudeSessionReset ||
+                   usage.weeklyResets != appData.claudeWeeklyReset;
+
+    // An "x min ago" note appears after 30 min without news: redraw when it goes away
+    bool wasOld = appData.claudeValid && appData.epoch - appData.claudeUpdated > 30 * 60;
+
+    appData.claudeValid = true;
+    appData.claudeSession = session;
+    appData.claudeWeekly = weekly;
+    appData.claudeSessionReset = usage.sessionResets;
+    appData.claudeWeeklyReset = usage.weeklyResets;
+    appData.claudeUpdated = time(nullptr);
+    Serial.printf("Claude usage: session %u%%, week %u%%\n", session, weekly);
+
+    if (changed || wasOld) {
+        ui.requestRedraw();
+    }
+}
+
+// Apply what was changed on the settings page (already saved)
+void applySettingsChanges() {
+    if (portal.takeWidgetsChanged()) {
+        applyWidgets();
+    }
+    if (portal.takeCityChanged()) {
+        strlcpy(appData.city, settings.cityName.c_str(), sizeof(appData.city));
+        appData.weatherValid = false;  // The old temperature is from the old city
+        ui.requestRedraw();
+        downloadNow = true;
+    }
+    if (portal.takeCalendarChanged()) {
+        appData.calendarValid = false;  // Old events belong to the old link
+        appData.eventCount = 0;
+        ui.requestRedraw();
+        downloadNow = true;
+    }
+    ClaudeUsage usage;
+    if (portal.takeClaudeUsage(usage)) {
+        applyClaudeUsage(usage);
+    }
+    if (portal.takeWifiChanged()) {
+        strlcpy(appData.wifiName, settings.wifiSsid.c_str(), sizeof(appData.wifiName));
+        downloadNow = true;
+    }
+}
+
+void updateSetup() {
+    if (ui.takeSettingsOpened()) {
+        fillSettingsPage();
+    }
+
+    if (!portal.active()) {
+        if (ui.takeSetupRequest()) {
+            startSetup();  // Press on the Settings screen
+            return;
+        }
+        // Settings pages on the home Wi-Fi (http://desk.local)
+        if (WiFi.status() == WL_CONNECTED && !portal.lanRunning()) {
+            portal.startLan(settings);
+        }
+        portal.loop();
+        applySettingsChanges();
+        return;
+    }
+
+    portal.loop();
+    if (portal.takeChanged()) {
+        strlcpy(appData.setupStatus, portal.statusText().c_str(), sizeof(appData.setupStatus));
+        ui.requestRedraw();
+    }
+
+    if (ui.takeSetupRestart()) {
+        portal.end();
+        startSetup();
+        return;
+    }
+
+    if (ui.takeSetupCancel()) {
+        portal.end();
+        appData.setupActive = false;
+        ui.closeSetup();
+        connectWiFi(false);  // Back to the saved Wi-Fi
+        return;
+    }
+
+    if (portal.finished()) {
+        portal.end();
+        appData.setupActive = false;
+        appData.wifiConnected = WiFi.status() == WL_CONNECTED;
+        ui.closeSetup();
+        downloadNow = true;
+    }
+
 }
 
 void initTime() {
@@ -213,6 +446,7 @@ void updateTime() {
 
     bool minuteChanged = !appData.timeValid || now.tm_min != appData.now.tm_min;
     appData.now = now;
+    appData.epoch = time(nullptr);
     appData.timeValid = true;
     appData.wifiConnected = (WiFi.status() == WL_CONNECTED);
 
@@ -271,14 +505,23 @@ void updateDisplay() {
 
 void handleInput() {
     static unsigned long lastInput = 0;
+    static bool touchSeen = false;  // The touch module can't be detected, only used
 
-    // Without the encoder there is no way to wake up, so never sleep
-    if (!encoderFound) {
-        return;
+    if (touchPending) {
+        touchPending = false;
+        touchSeen = true;
+        lastInput = millis();
+        ui.onTouch();
     }
 
-    if (millis() - lastInput >= SLEEP_AFTER_MS) {
+    // Sleep only if something can wake the screen up again
+    bool canWake = encoderFound || touchSeen;
+    if (canWake && millis() - lastInput >= SLEEP_AFTER_MS) {
         ui.enterSleep();
+    }
+
+    if (!encoderFound) {
+        return;
     }
 
     int32_t steps = rotary.getEncoderDelta();
@@ -339,7 +582,12 @@ void updateWeather(bool force) {
     static unsigned long lastAttempt = 0;
     static bool everAttempted = false;
 
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED || portal.active()) {
+        return;
+    }
+
+    // Downloads block for a moment: wait while the controls are in use
+    if (!force && ui.inUse()) {
         return;
     }
 
@@ -352,7 +600,7 @@ void updateWeather(bool force) {
 
     String response;
     String requestError;
-    if (!fetchWeather(LATITUDE, LONGITUDE, WEATHER_API_KEY, response, requestError)) {
+    if (!fetchWeather(settings.cityLat, settings.cityLon, WEATHER_API_KEY, response, requestError)) {
         Serial.printf("Weather request failed: %s\n", requestError.c_str());
         return;
     }
@@ -382,6 +630,161 @@ void updateWeather(bool force) {
     appData.weatherValid = true;
 
     if (changed || force) {
+        ui.requestRedraw();
+    }
+}
+
+static bool sameEvents(const CalendarEvent* a, const CalendarEvent* b, int count) {
+    for (int i = 0; i < count; i++) {
+        if (a[i].day != b[i].day || a[i].startMin != b[i].startMin || a[i].endMin != b[i].endMin ||
+            a[i].allDay != b[i].allDay || strcmp(a[i].title, b[i].title) != 0 ||
+            strcmp(a[i].location, b[i].location) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void updateCalendar(bool force) {
+    static unsigned long lastAttempt = 0;
+    static bool everAttempted = false;
+    static bool warnedNoUrl = false;
+
+    // Needs the date to know which days to load
+    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active()) {
+        return;
+    }
+
+    // Downloads block for a moment: wait while the controls are in use
+    if (!force && ui.inUse()) {
+        return;
+    }
+    if (settings.calendarUrl.length() == 0) {
+        if (!warnedNoUrl) {
+            Serial.println("Calendar skipped: add the calendar link on the setup page (menu > Settings)");
+            warnedNoUrl = true;
+        }
+        return;
+    }
+    warnedNoUrl = false;
+
+    unsigned long interval = appData.calendarValid ? CALENDAR_INTERVAL_MS : CALENDAR_RETRY_MS;
+    if (!force && everAttempted && millis() - lastAttempt < interval) {
+        return;
+    }
+    lastAttempt = millis();
+    everAttempted = true;
+
+    // From this week's Monday (the calendar page shows this week) to
+    // 8 weeks ahead (for the next event on Home and in the menu)
+    int32_t today = DateUtil::dayOf(appData.now);
+    int32_t firstDay = today - DateUtil::weekday(today);
+    int32_t lastDay = today + CALENDAR_DAYS_AHEAD;
+
+    // Download into a temporary list, so a failed update keeps the old events
+    std::unique_ptr<CalendarEvent[]> events(new (std::nothrow) CalendarEvent[MAX_CALENDAR_EVENTS]);
+    if (!events) {
+        Serial.println("Calendar: not enough RAM");
+        return;
+    }
+
+    String error;
+    int32_t completeUntil = lastDay;
+    int count = fetchCalendar(settings.calendarUrl.c_str(), firstDay, lastDay, events.get(), MAX_CALENDAR_EVENTS,
+                              completeUntil, error);
+    if (count < 0) {
+        Serial.printf("Calendar request failed: %s\n", error.c_str());
+        return;
+    }
+
+    // Days after completeUntil may be missing events: treat them as unknown
+    lastDay = completeUntil;
+    bool changed = !appData.calendarValid || count != appData.eventCount ||
+                   firstDay != appData.calendarFirstDay || lastDay != appData.calendarLastDay ||
+                   !sameEvents(events.get(), appData.events, count);
+
+    for (int i = 0; i < count; i++) {
+        appData.events[i] = events[i];
+    }
+    appData.eventCount = count;
+    appData.calendarFirstDay = firstDay;
+    appData.calendarLastDay = lastDay;
+    appData.calendarValid = true;
+
+    if (changed || force) {
+        ui.requestRedraw();
+    }
+}
+
+// ---------- Electricity spot price (api.spot-hinta.fi) ----------
+
+// Do we have prices for this local day?
+static bool havePricesFor(int32_t day) {
+    for (int i = 0; i < appData.priceCount; i++) {
+        if (DateUtil::localDay(appData.prices[i].start) == day) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Prices are fixed once published, so ask rarely: when today's are missing,
+// every 30 min in the afternoon until tomorrow's are out, otherwise every 6 h.
+// The API allows at most one request a minute.
+void updatePrices(bool force) {
+    static unsigned long lastAttempt = 0;
+    static bool everAttempted = false;
+    const unsigned long MINUTE = 60 * 1000UL;
+
+    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active()) {
+        return;
+    }
+    if (!force && ui.inUse()) {
+        return;  // Downloads block for a moment
+    }
+
+    int32_t today = DateUtil::dayOf(appData.now);
+    unsigned long interval;
+    if (!appData.pricesValid || !havePricesFor(today)) {
+        interval = 5 * MINUTE;
+    } else if (appData.now.tm_hour >= 14 && !havePricesFor(today + 1)) {
+        interval = 30 * MINUTE;  // Tomorrow's prices come out in the afternoon
+    } else {
+        interval = 6 * 60 * MINUTE;
+    }
+    if (everAttempted) {
+        unsigned long since = millis() - lastAttempt;
+        if (since < 2 * MINUTE || (!force && since < interval)) {
+            return;  // Never more often than every 2 minutes, even on "refresh"
+        }
+    }
+    lastAttempt = millis();
+    everAttempted = true;
+
+    std::unique_ptr<PricePoint[]> prices(new (std::nothrow) PricePoint[MAX_PRICES]);
+    if (!prices) {
+        Serial.println("Prices: not enough RAM");
+        return;
+    }
+    String error;
+    int count = fetchPrices(prices.get(), MAX_PRICES, error);
+    if (count < 0) {
+        Serial.printf("Price request failed: %s\n", error.c_str());
+        return;
+    }
+
+    bool changed = !appData.pricesValid || count != appData.priceCount;
+    for (int i = 0; i < count && !changed; i++) {
+        changed = prices[i].start != appData.prices[i].start || prices[i].cents != appData.prices[i].cents;
+    }
+    for (int i = 0; i < count; i++) {
+        appData.prices[i] = prices[i];
+    }
+    appData.priceCount = count;
+    appData.pricesValid = true;
+    Serial.printf("Prices: %d quarter-hours, tomorrow %s\n", count, havePricesFor(today + 1) ? "yes" : "not yet");
+
+    if (changed) {
         ui.requestRedraw();
     }
 }

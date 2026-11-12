@@ -150,7 +150,7 @@ Row rows[STEP_COUNT];
 void printTable(int count) {
     Serial.println();
     Serial.println("=== E-Ink benchmark (times in ms) ===");
-    Serial.println(" #  mode       LUT         Hz  temp  pattern  region  keep   init  data   PON    DRF   POF  total  ok");
+    Serial.println(" #  mode       LUT           Hz  temp  pattern  region  keep   init  data   PON    DRF   POF  total  ok");
     for (int i = 0; i < count; i++) {
         const Step& s = *rows[i].step;
         const EinkTiming& t = rows[i].timing;
@@ -161,7 +161,7 @@ void printTable(int count) {
             snprintf(temp, sizeof(temp), "%d", s.temp);
         }
         const char* lut = s.mode == EinkMode::KW_LUT ? EinkDisplay::lutSet(s.lut).name : "OTP";
-        Serial.printf("%2d  %-9s  %-10s %3u  %4s  %-7s  %-6s  %4lu  %5lu %5lu %5lu  %5lu %5lu  %5lu  %s\n",
+        Serial.printf("%2d  %-9s  %-12s %3u  %4s  %-7s  %-6s  %4lu  %5lu %5lu %5lu  %5lu %5lu  %5lu  %s\n",
                       i + 1, EinkDisplay::modeName(s.mode), lut, s.hz, temp, patternName(s.pattern),
                       s.region ? "yes" : "no", (unsigned long)s.keepMs, (unsigned long)t.init,
                       (unsigned long)t.data, (unsigned long)t.pon, (unsigned long)t.drf,

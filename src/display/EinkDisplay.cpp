@@ -87,6 +87,9 @@ bool EinkDisplay::setConfig(const EinkConfig& config) {
         return false;
     }
 
+    while (!pollRefresh()) {
+        delay(1);
+    }
     powerOff();
     // Switching between three-colour and black/white leaves the panel in an
     // unknown state for our partial waveform
@@ -99,13 +102,14 @@ bool EinkDisplay::setConfig(const EinkConfig& config) {
 }
 
 const EinkLutSet& EinkDisplay::lutSet(EinkLutId id) {
+    const bool fast = EPD_WAVEFORM == 1;
     switch (id) {
         case EinkLutId::PARTIAL:
-            return LUT_PARTIAL;
+            return fast ? LUT_PARTIAL_FAST : LUT_PARTIAL;
         case EinkLutId::FAST_FULL:
-            return LUT_FAST_FULL;
+            return fast ? LUT_FAST_FULL_FAST : LUT_FAST_FULL;
         default:
-            return LUT_FULL_CLEAN;
+            return fast ? LUT_FULL_CLEAN_FAST : LUT_FULL_CLEAN;
     }
 }
 
@@ -121,29 +125,45 @@ const char* EinkDisplay::modeName(EinkMode mode) {
 }
 
 void EinkDisplay::printLutBalance() {
-    Serial.println("LUT DC imbalance (0.1 V x frames, must be 0):");
-    for (EinkLutId id : {EinkLutId::PARTIAL, EinkLutId::FAST_FULL, EinkLutId::FULL_CLEAN}) {
-        const EinkLutSet& s = lutSet(id);
+    Serial.printf("LUT DC imbalance (0.1 V x frames, must be 0), %s set in use:\n",
+                  EPD_WAVEFORM == 1 ? "fast" : "normal");
+    const EinkLutSet* const sets[] = {&LUT_PARTIAL,      &LUT_FAST_FULL,      &LUT_FULL_CLEAN,
+                                      &LUT_PARTIAL_FAST, &LUT_FAST_FULL_FAST, &LUT_FULL_CLEAN_FAST};
+    for (const EinkLutSet* set : sets) {
+        const EinkLutSet& s = *set;
         long ww = einkLutCharge(s.ww, s.vcom);
         long kw = einkLutCharge(s.kw, s.vcom);
         long wk = einkLutCharge(s.wk, s.vcom);
         long kk = einkLutCharge(s.kk, s.vcom);
         bool ok = ww == 0 && kw == 0 && wk == 0 && kk == 0;
-        Serial.printf("  %-10s WW %ld  KW %ld  WK %ld  KK %ld  %s\n", s.name, ww, kw, wk, kk,
+        Serial.printf("  %-12s WW %ld  KW %ld  WK %ld  KK %ld  %s\n", s.name, ww, kw, wk, kk,
                       ok ? "OK" : "WARNING: NOT BALANCED");
     }
 }
 
 // ---------- Public refresh API ----------
 
-bool EinkDisplay::refresh() {
+// Mode 2: PARTIAL normally, FULL_CLEAN at start and every EPD_CLEAN_EVERY
+// updates, but never while someone is using the controls (it flashes for seconds)
+EinkLutId EinkDisplay::chooseLut(bool interactive) const {
     if (cfg.mode != EinkMode::KW_LUT) {
-        return fullRefresh(EinkLutId::FAST_FULL);
+        return EinkLutId::FAST_FULL;  // Ignored: the panel's own waveform is used
     }
-    if (!panelKnown || updatesSinceClean >= EPD_CLEAN_EVERY) {
-        return fullRefresh(EinkLutId::FULL_CLEAN);
+    if (!panelKnown) {
+        return EinkLutId::FULL_CLEAN;
     }
-    return fullRefresh(EinkLutId::PARTIAL);
+    if (updatesSinceClean >= EPD_CLEAN_EVERY && !interactive) {
+        return EinkLutId::FULL_CLEAN;
+    }
+    return EinkLutId::PARTIAL;
+}
+
+bool EinkDisplay::refresh() {
+    return runRefresh(chooseLut(false), nullptr);
+}
+
+bool EinkDisplay::startRefresh(bool interactive) {
+    return beginRefresh(chooseLut(interactive), nullptr);
 }
 
 bool EinkDisplay::fullRefresh(EinkLutId lut) {
@@ -181,10 +201,16 @@ bool EinkDisplay::clean() {
 }
 
 void EinkDisplay::sleep() {
+    while (!pollRefresh()) {
+        delay(1);
+    }
     powerOff();
 }
 
 void EinkDisplay::tick() {
+    if (!pollRefresh()) {
+        return;  // Still refreshing
+    }
     if (powered && millis() - lastActive >= cfg.keepPowerMs) {
         powerOff();
     }
@@ -193,8 +219,25 @@ void EinkDisplay::tick() {
 // ---------- Refresh ----------
 
 bool EinkDisplay::runRefresh(EinkLutId lut, const Window* window) {
+    if (!beginRefresh(lut, window)) {
+        return false;
+    }
+    while (!pollRefresh()) {
+        delay(1);
+    }
+    return timing.ok;
+}
+
+// Steps 1-4: wake up, send the image, power on and start the refresh.
+// Returns right after the refresh command; pollRefresh() finishes it.
+bool EinkDisplay::beginRefresh(EinkLutId lut, const Window* window) {
+    // Only one refresh at a time
+    while (!pollRefresh()) {
+        delay(1);
+    }
+
     timing = EinkTiming();
-    unsigned long start = millis();
+    refreshStart = millis();
     bool kw = cfg.mode != EinkMode::KWR_STOCK;
 
     // 1. Wake up and set registers (datasheet p39: reset, then initialize)
@@ -246,17 +289,18 @@ bool EinkDisplay::runRefresh(EinkLutId lut, const Window* window) {
         powered = true;
     }
 
-    // 4. Refresh
+    // 4. Start the refresh; the panel works on its own from here
     command(CMD_DRF);
-    if (!waitIdle("DRF", &timing.drf)) {
-        abortRefresh("DRF");
-        return false;
-    }
+    refreshing = true;
+    drfStart = millis();
+    refreshLut = lut;
+    refreshHasWindow = window != nullptr;
     if (window != nullptr) {
-        command(CMD_PTOUT);
+        refreshWindow = *window;
     }
 
-    // 5. Remember what the panel shows now
+    // The image is in the controller now, so the buffer may change freely.
+    // Remember what the panel will show.
     if (kw) {
         if (window == nullptr) {
             memcpy(oldFrame, black_buffer, FRAME_BYTES);
@@ -266,7 +310,7 @@ bool EinkDisplay::runRefresh(EinkLutId lut, const Window* window) {
                 memcpy(oldFrame + offset, black_buffer + offset, (window->x1 - window->x0 + 1) / 8);
             }
         }
-        // N2OCP copied NEW to OLD in the controller, but only trust it
+        // N2OCP copies NEW to OLD in the controller, but only trust it
         // after a whole-screen refresh
         controllerHasOld = (window == nullptr);
         panelKnown = true;
@@ -277,8 +321,35 @@ bool EinkDisplay::runRefresh(EinkLutId lut, const Window* window) {
     } else {
         updatesSinceClean++;
     }
+    return true;
+}
 
-    // 6. Power off, or keep the booster on for a quick next update
+// Steps 5-6: once BUSY is high again, end the refresh and power off (or keep
+// the booster on). Returns true when no refresh is running any more.
+bool EinkDisplay::pollRefresh() {
+    if (!refreshing) {
+        return true;
+    }
+
+    unsigned long elapsed = millis() - drfStart;
+    if (elapsed < 5) {
+        return false;  // BUSY drops shortly after the command
+    }
+    if (digitalRead(_busy_pin) == LOW) {
+        if (elapsed > BUSY_TIMEOUT_MS) {
+            refreshing = false;
+            abortRefresh("DRF");
+            return true;
+        }
+        return false;
+    }
+
+    refreshing = false;
+    timing.drf = elapsed;
+    if (refreshHasWindow) {
+        command(CMD_PTOUT);
+    }
+
     lastActive = millis();
     if (cfg.keepPowerMs == 0) {
         unsigned long pofStart = millis();
@@ -286,9 +357,9 @@ bool EinkDisplay::runRefresh(EinkLutId lut, const Window* window) {
         timing.pof = millis() - pofStart;
     }
 
-    timing.total = millis() - start;
+    timing.total = millis() - refreshStart;
     timing.ok = true;
-    logTiming(lut, window);
+    logTiming(refreshLut, refreshHasWindow ? &refreshWindow : nullptr);
     return true;
 }
 
