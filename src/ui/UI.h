@@ -8,6 +8,7 @@
 #include "pages/MenuPage.h"
 #include "pages/SettingsPage.h"
 #include "pages/SetupPage.h"
+#include "pages/PomodoroPage.h"
 #include "pages/SleepPage.h"
 #include "pages/WidgetPage.h"
 
@@ -52,6 +53,8 @@ public:
     bool takeSetupCancel();              // Press on the setup page (only if Wi-Fi was set up before)
 
     // Show the sleep screen, any input wakes up to Home (not during setup)
+    // Show the sleep screen, any input wakes up to Home.
+    // Ignored while a Pomodoro timer is running.
     void enterSleep();
     bool isAsleep() const { return currentPage == SLEEP; }
 
@@ -68,6 +71,7 @@ private:
         ELECTRICITY,
         SETTINGS,
         SETUP,
+        POMODORO,
         SLEEP
     };
 
@@ -94,6 +98,19 @@ private:
     SetupPage setupPage;
     SettingsPage settingsPage;
     WidgetPage widgetPage;
+    PomodoroPage pomodoroPage;
+
+    Pomodoro pomodoro;
+    int pomodoroDrawnMinutes = -1;
+    int lastDay = -1;
+
+    void onPomodoroRotate(int steps);
+    void onPomodoroPress();
+    void onPomodoroLongPress();
+    void updatePomodoro();
+
+    // Seconds since midnight, -1 while the clock is not synced
+    int32_t clockSeconds() const;
 
     // Returns true if the input was used to wake up
     bool wakeUp();

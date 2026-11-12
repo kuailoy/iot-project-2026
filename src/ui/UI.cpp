@@ -2,6 +2,8 @@
 
 #include "Components.h"
 
+#include <Arduino.h>
+
 void UI::begin(EinkDisplay& epd, const AppData& appData) {
     display = &epd;
     data = &appData;
@@ -35,6 +37,12 @@ void UI::onRotate(int steps) {
         redrawNeeded = true;
     } else if (currentPage == ELECTRICITY) {
         electricityPage.toggleDay();  // Today <-> tomorrow
+    if (currentPage == POMODORO) {
+        onPomodoroRotate(steps);
+    } else if (currentPage == HOME) {
+        openPage(MENU);
+    } else {
+        menuPage.move(steps);
         redrawNeeded = true;
     }
 }
@@ -60,6 +68,10 @@ void UI::onPress() {
         openPage(MENU);
         return;
     }
+    if (currentPage == POMODORO) {
+        onPomodoroPress();
+        return;
+    }
 
     switch (menuPage.selected()) {
         case MenuPage::DASHBOARD:
@@ -76,6 +88,8 @@ void UI::onPress() {
         case MenuPage::SETTINGS:
             settingsOpened = true;  // main.cpp fills in the address and QR code
             openPage(SETTINGS);
+        case MenuPage::POMODORO:
+            openPage(POMODORO);
             break;
         default:
             // TODO: Open the other mode pages when they are implemented
@@ -94,7 +108,9 @@ void UI::onLongPress() {
         refreshRequested = true;
     } else if (currentPage == SETUP) {
         setupRestartRequested = true;
-    } else {
+    } else if (currentPage == POMODORO) {
+        onPomodoroLongPress();
+    } else if (currentPage != HOME) {
         openPage(HOME);
     }
 }
@@ -111,12 +127,89 @@ void UI::onTouch() {
 
     // Switch between the two home pages; from anywhere else, the widget page
     openPage(currentPage == WIDGETS ? HOME : WIDGETS);
+// ---------- Pomodoro ----------
+
+void UI::onPomodoroRotate(int steps) {
+    if (pomodoro.state() == Pomodoro::READY) {
+        pomodoro.adjustFocus(steps);
+        redrawNeeded = true;
+    } else {
+        // Timer keeps running in the background, Pomodoro stays selected to come back
+        menuPage.select(MenuPage::POMODORO);
+        openPage(MENU);
+    }
+}
+
+void UI::onPomodoroPress() {
+    uint32_t now = millis();
+
+    switch (pomodoro.state()) {
+        case Pomodoro::FOCUS:
+        case Pomodoro::BREAK:
+            pomodoro.pause(now, clockSeconds());
+            break;
+        case Pomodoro::PAUSED:
+            pomodoro.resume(now, clockSeconds());
+            break;
+        default:  // READY, FOCUS_DONE, CYCLE_DONE
+            pomodoro.start(now, clockSeconds());
+            break;
+    }
+    redrawNeeded = true;
+}
+
+void UI::onPomodoroLongPress() {
+    switch (pomodoro.state()) {
+        case Pomodoro::READY:
+        case Pomodoro::CYCLE_DONE:
+            openPage(HOME);
+            break;
+        case Pomodoro::FOCUS:
+            break;  // Pause first, so a slip of the finger can't end the session
+        default:    // PAUSED, BREAK, FOCUS_DONE
+            pomodoro.stop();
+            redrawNeeded = true;
+            break;
+    }
+}
+
+void UI::updatePomodoro() {
+    // Phase ended by itself: show the alert or the next session from any page
+    if (pomodoro.tick(millis())) {
+        openPage(POMODORO);
+    }
+
+    // With a synced clock, main.cpp already redraws every minute. Without it,
+    // redraw when the minutes shown change, but never more than that.
+    if (currentPage == POMODORO && !data->timeValid &&
+        pomodoro.minutesLeft() != pomodoroDrawnMinutes) {
+        redrawNeeded = true;
+    }
+
+    if (data->timeValid && data->now.tm_yday != lastDay) {
+        if (lastDay != -1) {
+            pomodoro.resetToday();
+        }
+        lastDay = data->now.tm_yday;
+    }
+}
+
+int32_t UI::clockSeconds() const {
+    if (!data->timeValid) {
+        return -1;
+    }
+    return data->now.tm_hour * 3600 + data->now.tm_min * 60 + data->now.tm_sec;
 }
 
 // ---------- Rendering ----------
 
 void UI::update() {
-    if (display == nullptr || data == nullptr || !redrawNeeded) {
+    if (display == nullptr || data == nullptr) {
+        return;
+    }
+
+    updatePomodoro();
+    if (!redrawNeeded) {
         return;
     }
     if (display->isBusy()) {
@@ -147,6 +240,9 @@ void UI::update() {
             break;
         case SETUP:
             setupPage.draw(*display, *data);
+        case POMODORO:
+            pomodoroPage.draw(*display, *data, pomodoro, millis());
+            pomodoroDrawnMinutes = pomodoro.minutesLeft();
             break;
         case SLEEP:
             sleepPage.draw(*display, *data);
@@ -164,7 +260,10 @@ bool UI::takeRefreshRequest() {
 }
 
 void UI::enterSleep() {
-    if (currentPage != SLEEP && currentPage != SETUP) {
+    if (pomodoro.isActive()) {
+        return;  // Keep the timer visible
+    }
+    if (currentPage != SLEEP) {
         openPage(SLEEP);
     }
 }
@@ -219,8 +318,7 @@ void UI::showNextPage() {
         case MENU:
             // Walk through the menu one line at a time, then go on
             if (menuPage.selected() == MenuPage::ITEM_COUNT - 1) {
-                calendarPage.open();
-                openPage(CALENDAR);
+                openPage(POMODORO);
             } else {
                 menuPage.move(1);
                 redrawNeeded = true;
@@ -235,6 +333,9 @@ void UI::showNextPage() {
             break;
         case SETUP:
             break;  // Setup stays until it is done
+        case POMODORO:
+            openPage(SLEEP);
+            break;
         case SLEEP:
             openPage(HOME);
             break;
