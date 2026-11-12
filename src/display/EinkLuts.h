@@ -100,6 +100,50 @@ constexpr EinkLutSet LUT_FULL_CLEAN = {
                    lutGroup(LV_0, 40, LV_0, 40, LV_0, 0, LV_0, 0, 1)}},
 };
 
+// ---------- Fast set (EPD_WAVEFORM=1) ----------
+// Same shapes with shorter phases: about 40% less time per update, but
+// pixels get less drive, so expect fainter black and more ghosting.
+// Combine with EPD_FRAME_RATE for even shorter updates.
+
+// 40 frames = 0.8 s at 50 Hz (normal: 1.4 s)
+constexpr EinkLutSet LUT_PARTIAL_FAST = {
+    "PARTIAL_F",
+    /* vcom   */ {{lutGroup(LV_0, 18, LV_0, 2, LV_0, 18, LV_0, 2, 1)}},
+    /* ww     */ {{lutGroup(LV_0, 18, LV_0, 2, LV_0, 18, LV_0, 2, 1)}},
+    /* kw     */ {{lutGroup(LV_H, 18, LV_H, 2, LV_L, 18, LV_L, 2, 1)}},
+    /* wk     */ {{lutGroup(LV_L, 18, LV_0, 2, LV_H, 18, LV_0, 2, 1)}},
+    /* kk     */ {{lutGroup(LV_0, 18, LV_0, 2, LV_0, 18, LV_0, 2, 1)}},
+    /* border */ {{lutGroup(LV_0, 18, LV_0, 2, LV_0, 18, LV_0, 2, 1)}},
+};
+
+// 40 frames = 0.8 s at 50 Hz (normal: 1.2 s)
+constexpr EinkLutSet LUT_FAST_FULL_FAST = {
+    "FAST_FULL_F",
+    /* vcom   */ {{lutGroup(LV_0, 20, LV_0, 20, LV_0, 0, LV_0, 0, 1)}},
+    /* ww     */ {{lutGroup(LV_H, 20, LV_L, 20, LV_0, 0, LV_0, 0, 1)}},
+    /* kw     */ {{lutGroup(LV_H, 20, LV_L, 20, LV_0, 0, LV_0, 0, 1)}},
+    /* wk     */ {{lutGroup(LV_L, 20, LV_H, 20, LV_0, 0, LV_0, 0, 1)}},
+    /* kk     */ {{lutGroup(LV_L, 20, LV_H, 20, LV_0, 0, LV_0, 0, 1)}},
+    /* border */ {{lutGroup(LV_0, 20, LV_0, 20, LV_0, 0, LV_0, 0, 1)}},
+};
+
+// 2 x 40 + 60 = 140 frames = 2.8 s at 50 Hz (normal: 4 s)
+constexpr EinkLutSet LUT_FULL_CLEAN_FAST = {
+    "CLEAN_F",
+    /* vcom   */ {{lutGroup(LV_0, 10, LV_0, 10, LV_0, 10, LV_0, 10, 2),
+                   lutGroup(LV_0, 30, LV_0, 30, LV_0, 0, LV_0, 0, 1)}},
+    /* ww     */ {{lutGroup(LV_H, 10, LV_L, 10, LV_H, 10, LV_L, 10, 2),
+                   lutGroup(LV_H, 30, LV_L, 30, LV_0, 0, LV_0, 0, 1)}},
+    /* kw     */ {{lutGroup(LV_H, 10, LV_L, 10, LV_H, 10, LV_L, 10, 2),
+                   lutGroup(LV_H, 30, LV_L, 30, LV_0, 0, LV_0, 0, 1)}},
+    /* wk     */ {{lutGroup(LV_L, 10, LV_H, 10, LV_L, 10, LV_H, 10, 2),
+                   lutGroup(LV_L, 30, LV_H, 30, LV_0, 0, LV_0, 0, 1)}},
+    /* kk     */ {{lutGroup(LV_L, 10, LV_H, 10, LV_L, 10, LV_H, 10, 2),
+                   lutGroup(LV_L, 30, LV_H, 30, LV_0, 0, LV_0, 0, 1)}},
+    /* border */ {{lutGroup(LV_0, 10, LV_0, 10, LV_0, 10, LV_0, 10, 2),
+                   lutGroup(LV_0, 30, LV_0, 30, LV_0, 0, LV_0, 0, 1)}},
+};
+
 // ---------- Compile-time checks ----------
 // DC balance: for every transition, the sum of (pixel voltage x frames)
 // must be 0, otherwise charge builds up in the panel and damages it over
@@ -161,3 +205,11 @@ static_assert(einkSetTimingOk(LUT_FULL_CLEAN), "LUT_FULL_CLEAN: all six LUTs nee
 static_assert(EPD_ALLOW_UNBALANCED || einkSetBalanced(LUT_PARTIAL), "LUT_PARTIAL is not DC-balanced");
 static_assert(EPD_ALLOW_UNBALANCED || einkSetBalanced(LUT_FAST_FULL), "LUT_FAST_FULL is not DC-balanced");
 static_assert(EPD_ALLOW_UNBALANCED || einkSetBalanced(LUT_FULL_CLEAN), "LUT_FULL_CLEAN is not DC-balanced");
+
+static_assert(einkSetTimingOk(LUT_PARTIAL_FAST), "LUT_PARTIAL_FAST: all six LUTs need the same frames/repeats");
+static_assert(einkSetTimingOk(LUT_FAST_FULL_FAST), "LUT_FAST_FULL_FAST: all six LUTs need the same frames/repeats");
+static_assert(einkSetTimingOk(LUT_FULL_CLEAN_FAST), "LUT_FULL_CLEAN_FAST: all six LUTs need the same frames/repeats");
+
+static_assert(EPD_ALLOW_UNBALANCED || einkSetBalanced(LUT_PARTIAL_FAST), "LUT_PARTIAL_FAST is not DC-balanced");
+static_assert(EPD_ALLOW_UNBALANCED || einkSetBalanced(LUT_FAST_FULL_FAST), "LUT_FAST_FULL_FAST is not DC-balanced");
+static_assert(EPD_ALLOW_UNBALANCED || einkSetBalanced(LUT_FULL_CLEAN_FAST), "LUT_FULL_CLEAN_FAST is not DC-balanced");

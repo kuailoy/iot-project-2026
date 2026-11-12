@@ -1,5 +1,6 @@
 #include "HomePage.h"
 #include "../Components.h"
+#include "../../app/CalendarData.h"
 #include "../WeatherIcons.h"
 
 #include <math.h>
@@ -17,7 +18,7 @@ static void formatTemp(char* buffer, size_t size, bool valid, float value) {
 }
 
 void HomePage::draw(Adafruit_GFX& gfx, const AppData& data) {
-    char text[48];
+    char text[64];
 
     drawHeader(gfx, data);
 
@@ -45,12 +46,16 @@ void HomePage::draw(Adafruit_GFX& gfx, const AppData& data) {
     // ---------- Next calendar event ----------
     drawCalendarIcon(gfx, 39, 313);
     drawText(gfx, 108, 330, "NEXT EVENT", FONT_SMALL);
-    if (data.eventValid) {
-        snprintf(text, sizeof(text), "%s %s", data.eventTime, data.eventTitle);
-    } else {
+    const CalendarEvent* next = CalendarData::nextEvent(data);
+    if (next != nullptr) {
+        CalendarData::formatNext(text, sizeof(text), *next, DateUtil::dayOf(data.now));
+    } else if (data.calendarValid) {
         snprintf(text, sizeof(text), "No upcoming events");
+    } else {
+        snprintf(text, sizeof(text), "--");
     }
+    fitText(gfx, text, SCREEN_W - MARGIN - 108, FONT_BODY);
     drawText(gfx, 108, 362, text, FONT_BODY);
 
-    drawFooter(gfx, "Turn: mode      Press: refresh");
+    drawFooter(gfx, "Press: menu      Hold: refresh");
 }

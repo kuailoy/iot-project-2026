@@ -17,6 +17,7 @@ g++ -std=c++14 -O1 -DARDUINO=100 \
     "$ROOT/src/app/Pomodoro.cpp" \
     "$ROOT/src/app/Calendar.cpp" \
     "$ROOT/src/services/IcalParser.cpp" \
+    "$ROOT/src/app/WidgetLayout.cpp" \
     "$ROOT"/src/ui/pages/*.cpp \
     -o out/preview
 

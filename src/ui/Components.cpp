@@ -1,6 +1,8 @@
 #include "Components.h"
 
 #include <ctype.h>
+#include <stdio.h>
+#include <string.h>
 
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
@@ -50,6 +52,34 @@ void drawTextCentered(Adafruit_GFX& gfx, int16_t centerX, int16_t y, const char*
     int16_t inkStart;
     uint16_t width = textWidth(gfx, text, font, &inkStart);
     drawText(gfx, centerX - width / 2 - inkStart, y, text, font, color);
+}
+
+int16_t measureText(Adafruit_GFX& gfx, const char* text, const GFXfont* font) {
+    int16_t inkStart;
+    return textWidth(gfx, text, font, &inkStart);
+}
+
+void fitText(Adafruit_GFX& gfx, char* text, int16_t maxWidth, const GFXfont* font) {
+    int16_t inkStart;
+    if (textWidth(gfx, text, font, &inkStart) <= maxWidth) {
+        return;
+    }
+    // Replace the end with "..", one more character each time until it fits.
+    // The result is never longer than the original, so it fits the buffer.
+    size_t length = strlen(text);
+    while (length >= 2) {
+        size_t keep = length - 2;
+        while (keep > 0 && text[keep - 1] == ' ') {
+            keep--;
+        }
+        text[keep] = '.';
+        text[keep + 1] = '.';
+        text[keep + 2] = '\0';
+        if (keep == 0 || textWidth(gfx, text, font, &inkStart) <= maxWidth) {
+            return;
+        }
+        length = keep + 1;
+    }
 }
 
 void drawTemperature(Adafruit_GFX& gfx, int16_t x, int16_t y, const char* value,
@@ -129,7 +159,7 @@ void drawCloudIcon(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t width) {
     }
 }
 
-void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y) {
+void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y, bool check) {
     const int16_t top = y + 6;
 
     for (int16_t i = 0; i < 3; i++) {
@@ -140,6 +170,15 @@ void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y) {
     // Binder rings
     gfx.fillRect(x + 11, y, 3, 12, COLOR_FG);
     gfx.fillRect(x + 32, y, 3, 12, COLOR_FG);
+
+    // Check mark, 3 px thick
+    if (check) {
+        for (int16_t i = 0; i < 3; i++) {
+            gfx.drawLine(x + 13, y + 32 + i, x + 20, y + 39 + i, COLOR_FG);
+            gfx.drawLine(x + 20, y + 39 + i, x + 33, y + 26 + i, COLOR_FG);
+        }
+    }
+
 }
 
 // ---------- Screen sections ----------
@@ -185,6 +224,58 @@ void drawMenuRow(Adafruit_GFX& gfx, int16_t y, int16_t h, const char* label,
 
     if (showDivider && !selected) {
         drawDottedLine(gfx, MARGIN, right, y + h - 1);
+    }
+}
+
+
+void drawPriceChart(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h,
+                    const float* values, const bool* present, int markerHour,
+                    int fillFrom, int fillCount, bool labels) {
+    // Scale to the highest bar; negative prices draw as an empty bar
+    float top = 0.1f;
+    for (int i = 0; i < 24; i++) {
+        if (present[i] && values[i] > top) {
+            top = values[i];
+        }
+    }
+    const int16_t markerSpace = markerHour >= 0 ? 12 : 0;
+    const int16_t barArea = h - markerSpace;
+    const int16_t baseline = y + h;
+    const float pitch = w / 24.0f;
+    const int16_t barW = int16_t(pitch * 0.74f);
+
+    for (int i = 0; i < 24; i++) {
+        if (!present[i]) {
+            continue;
+        }
+        int16_t bx = x + int16_t(i * pitch);
+        int16_t bh = values[i] > 0 ? int16_t(values[i] / top * barArea + 0.5f) : 0;
+        if (bh < 3) {
+            bh = 3;  // Still visible
+        }
+        int16_t by = baseline - bh;
+        bool filled = i >= fillFrom && i < fillFrom + fillCount;
+        if (filled) {
+            gfx.fillRect(bx, by, barW, bh, COLOR_FG);
+        } else {
+            gfx.drawRect(bx, by, barW, bh, COLOR_FG);
+            gfx.drawRect(bx + 1, by + 1, barW - 2, bh - 1, COLOR_FG);
+        }
+        if (i == markerHour) {
+            int16_t cx = bx + barW / 2;
+            gfx.fillTriangle(cx - 6, by - 11, cx + 6, by - 11, cx, by - 4, COLOR_FG);
+        }
+    }
+    gfx.fillRect(x, baseline, w, 2, COLOR_FG);
+
+    if (labels) {
+        static const int HOURS[] = {0, 6, 12, 18};
+        for (int hour : HOURS) {
+            char text[4];
+            snprintf(text, sizeof(text), "%02d", hour);
+            drawText(gfx, x + int16_t(hour * pitch), baseline + 20, text, FONT_SMALL);
+        }
+        drawTextRight(gfx, x + w, baseline + 20, "23", FONT_SMALL);
     }
 }
 

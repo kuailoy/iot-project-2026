@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Desk display: Claude usage",
+  "version": "1.0",
+  "description": "Sends your Claude plan usage (session and weekly limit) to the desk display every few minutes.",
+  "permissions": ["alarms", "storage"],
+  "host_permissions": ["https://claude.ai/*", "http://*/claude"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Claude usage for the desk display", "default_popup": "options.html" },
+  "options_page": "options.html"
+}
