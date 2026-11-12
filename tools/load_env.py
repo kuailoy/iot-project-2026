@@ -26,7 +26,7 @@ def read_env_file(path):
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
-        if key not in ("WIFI_SSID", "WIFI_PASSWORD", "TIME_API_KEY", "WEATHER_API_KEY"):
+        if key not in ("WIFI_SSID", "WIFI_PASSWORD", "TIME_API_KEY", "WEATHER_API_KEY", "CALENDAR_URL"):
             continue
 
         if value.startswith(("'", '"')):
@@ -50,10 +50,11 @@ env.Append(
         ("WIFI_PASSWORD", env.StringifyMacro(local_values.get("WIFI_PASSWORD", ""))),
         ("TIME_API_KEY", env.StringifyMacro(local_values.get("TIME_API_KEY", ""))),
         ("WEATHER_API_KEY", env.StringifyMacro(local_values.get("WEATHER_API_KEY", ""))),
+        ("CALENDAR_URL", env.StringifyMacro(local_values.get("CALENDAR_URL", ""))),
     ]
 )
 
-setting_names = ("WIFI_SSID", "WIFI_PASSWORD", "TIME_API_KEY", "WEATHER_API_KEY")
+setting_names = ("WIFI_SSID", "WIFI_PASSWORD", "TIME_API_KEY", "WEATHER_API_KEY", "CALENDAR_URL")
 loaded_names = [name for name in setting_names if local_values.get(name)]
 missing_names = [name for name in setting_names if not local_values.get(name)]
 

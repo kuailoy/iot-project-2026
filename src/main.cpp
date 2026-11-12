@@ -24,6 +24,7 @@
 // Project: wiring, shared data and UI
 #include "pins.h"
 #include "app/AppData.h"
+#include "services/CalendarService.h"
 #include "services/WeatherService.h"
 #include "ui/UI.h"
 #include "display/EinkDisplay.h"
@@ -39,6 +40,9 @@
 #ifndef WEATHER_API_KEY
 #define WEATHER_API_KEY ""
 #endif
+#ifndef CALENDAR_URL
+#define CALENDAR_URL ""  // iCal feed, webcal:// or https://
+#endif
 
 // ---------- Settings ----------
 
@@ -51,6 +55,8 @@ const float LONGITUDE = 27.68;
 
 const unsigned long WEATHER_INTERVAL_MS = 15 * 60 * 1000UL;
 const unsigned long WEATHER_RETRY_MS = 60 * 1000UL;
+const unsigned long CALENDAR_INTERVAL_MS = 30 * 60 * 1000UL;
+const unsigned long CALENDAR_RETRY_MS = 2 * 60 * 1000UL;
 const unsigned long SENSOR_INTERVAL_MS = 30 * 1000UL;
 const unsigned long LONG_PRESS_MS = 800;
 const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
@@ -91,6 +97,8 @@ void readSensor();
 void updateDisplay();
 void handleInput();
 void updateWeather(bool force);
+void updateCalendar(bool force);
+void updateNextEvent();
 void showPagesInTurn();
 
 // ---------- Setup ----------
@@ -127,7 +135,10 @@ void loop() {
 #endif
     updateTime();
     readSensor();
-    updateWeather(ui.takeRefreshRequest());
+    bool refresh = ui.takeRefreshRequest();
+    updateWeather(refresh);
+    updateCalendar(refresh);
+    updateNextEvent();
     updateDisplay();
 
     delay(50);
@@ -384,4 +395,72 @@ void updateWeather(bool force) {
     if (changed || force) {
         ui.requestRedraw();
     }
+}
+
+void updateCalendar(bool force) {
+    static unsigned long lastAttempt = 0;
+    static bool everAttempted = false;
+
+    // The time is needed to know which weeks to keep
+    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || strlen(CALENDAR_URL) == 0) {
+        return;
+    }
+
+    unsigned long interval = appData.calendar.valid ? CALENDAR_INTERVAL_MS : CALENDAR_RETRY_MS;
+    if (!force && everAttempted && millis() - lastAttempt < interval) {
+        return;
+    }
+    lastAttempt = millis();
+    everAttempted = true;
+
+    // From the start of this month (or week) to as far as the Calendar page can browse
+    int32_t today = CalendarDate::fromTm(appData.now);
+    int32_t monthStart = today - (appData.now.tm_mday - 1);
+    int32_t weekStart = today - CalendarDate::weekdayOf(today);
+    int32_t fromDay = monthStart < weekStart ? monthStart : weekStart;
+
+    static CalendarData fresh;  // About 4 KB, too big for the loop stack
+    String error;
+    if (!fetchCalendar(CALENDAR_URL, fromDay, today + CalendarData::DAYS_AHEAD, fresh, error)) {
+        Serial.printf("Calendar request failed: %s\n", error.c_str());
+        return;
+    }
+    Serial.printf("Calendar: %d events loaded\n", fresh.count);
+
+    // Only redraw when an event changed
+    if (!fresh.sameAs(appData.calendar)) {
+        appData.calendar = fresh;
+        ui.requestRedraw();
+    }
+}
+
+// Home page "NEXT EVENT": the running or next event of today
+void updateNextEvent() {
+    if (!appData.timeValid || !appData.calendar.valid) {
+        return;
+    }
+
+    int32_t today = CalendarDate::fromTm(appData.now);
+    int minute = appData.now.tm_hour * 60 + appData.now.tm_min;
+    const CalendarEvent* next = appData.calendar.nextAfter(today, minute);
+
+    // The Home page redraws on the next minute anyway, so no redraw is requested here
+    appData.eventValid = next != nullptr && next->day == today;
+    if (!appData.eventValid) {
+        return;
+    }
+
+    if (next->allDay) {
+        strcpy(appData.eventTime, "Today");
+    } else {
+        int hour = (next->startMinute / 60) % 24;
+        int min = next->startMinute % 60;
+        appData.eventTime[0] = '0' + hour / 10;
+        appData.eventTime[1] = '0' + hour % 10;
+        appData.eventTime[2] = ':';
+        appData.eventTime[3] = '0' + min / 10;
+        appData.eventTime[4] = '0' + min % 10;
+        appData.eventTime[5] = '\0';
+    }
+    snprintf(appData.eventTitle, sizeof(appData.eventTitle), "%s", next->title);
 }

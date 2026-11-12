@@ -13,6 +13,10 @@ g++ -std=c++14 -O1 -DARDUINO=100 \
     -Istub -I"$GFX" -I"$ROOT/src/ui" \
     preview.cpp "$GFX/Adafruit_GFX.cpp" \
     "$ROOT/src/ui/Components.cpp" \
+    "$ROOT/src/ui/WeatherIcons.cpp" \
+    "$ROOT/src/app/Pomodoro.cpp" \
+    "$ROOT/src/app/Calendar.cpp" \
+    "$ROOT/src/services/IcalParser.cpp" \
     "$ROOT"/src/ui/pages/*.cpp \
     -o out/preview
 
