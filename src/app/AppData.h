@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "Calendar.h"
 #include "WidgetLayout.h"
 
 // One occurrence of a calendar event, already in local time.
@@ -54,6 +55,10 @@ struct AppData {
     uint16_t co2 = 0;          // ppm
 
     // ---------- Calendar (iCal feed) ----------
+    CalendarData calendar;     // Events of the coming weeks, for the Calendar page
+    bool eventValid = false;   // Next event today, for the Home page
+    char eventTime[6] = "";    // "10:30"
+    char eventTitle[40] = "";
     // Helpers to read this: CalendarData.h
     bool calendarValid = false;      // At least one successful download
     int32_t calendarFirstDay = 0;    // Events are complete for these days (inclusive);

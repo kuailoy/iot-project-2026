@@ -72,6 +72,7 @@ private:
         SETTINGS,
         SETUP,
         POMODORO,
+        CALENDAR,
         SLEEP
     };
 
@@ -99,6 +100,7 @@ private:
     SettingsPage settingsPage;
     WidgetPage widgetPage;
     PomodoroPage pomodoroPage;
+    CalendarPage calendarPage;
 
     Pomodoro pomodoro;
     int pomodoroDrawnMinutes = -1;

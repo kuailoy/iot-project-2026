@@ -39,6 +39,10 @@ void UI::onRotate(int steps) {
         electricityPage.toggleDay();  // Today <-> tomorrow
     if (currentPage == POMODORO) {
         onPomodoroRotate(steps);
+    } else if (currentPage == CALENDAR) {
+        // "Turn: mode", Calendar stays selected to come back
+        menuPage.select(MenuPage::CALENDAR);
+        openPage(MENU);
     } else if (currentPage == HOME) {
         openPage(MENU);
     } else {
@@ -72,6 +76,11 @@ void UI::onPress() {
         onPomodoroPress();
         return;
     }
+    if (currentPage == CALENDAR) {
+        calendarPage.next();
+        redrawNeeded = true;
+        return;
+    }
 
     switch (menuPage.selected()) {
         case MenuPage::DASHBOARD:
@@ -90,6 +99,10 @@ void UI::onPress() {
             openPage(SETTINGS);
         case MenuPage::POMODORO:
             openPage(POMODORO);
+            break;
+        case MenuPage::CALENDAR:
+            calendarPage.showToday();
+            openPage(CALENDAR);
             break;
         default:
             // TODO: Open the other mode pages when they are implemented
@@ -110,6 +123,9 @@ void UI::onLongPress() {
         setupRestartRequested = true;
     } else if (currentPage == POMODORO) {
         onPomodoroLongPress();
+    } else if (currentPage == CALENDAR) {
+        calendarPage.toggleView();  // Day and week view
+        redrawNeeded = true;
     } else if (currentPage != HOME) {
         openPage(HOME);
     }
@@ -244,6 +260,9 @@ void UI::update() {
             pomodoroPage.draw(*display, *data, pomodoro, millis());
             pomodoroDrawnMinutes = pomodoro.minutesLeft();
             break;
+        case CALENDAR:
+            calendarPage.draw(*display, *data);
+            break;
         case SLEEP:
             sleepPage.draw(*display, *data);
             break;
@@ -334,7 +353,20 @@ void UI::showNextPage() {
         case SETUP:
             break;  // Setup stays until it is done
         case POMODORO:
-            openPage(SLEEP);
+            calendarPage.showToday();
+            if (calendarPage.isWeekView()) {
+                calendarPage.toggleView();
+            }
+            openPage(CALENDAR);
+            break;
+        case CALENDAR:
+            // Day view first, then the week view
+            if (calendarPage.isWeekView()) {
+                openPage(SLEEP);
+            } else {
+                calendarPage.toggleView();
+                redrawNeeded = true;
+            }
             break;
         case SLEEP:
             openPage(HOME);
