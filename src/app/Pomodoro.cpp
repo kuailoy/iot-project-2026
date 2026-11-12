@@ -58,7 +58,11 @@ void Pomodoro::pause(uint32_t nowMs, int32_t clockSec) {
         return;
     }
 
-    tick(nowMs);
+    // The phase may have just ended (e.g. during a slow E-Ink refresh):
+    // then the press shows that, there is nothing left to pause
+    if (tick(nowMs)) {
+        return;
+    }
     if (currentState == FOCUS) {
         addFocusTime(nowMs);
     }

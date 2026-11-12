@@ -2,6 +2,7 @@
 
 #include <ESPmDNS.h>
 #include <WiFi.h>
+#include <esp_random.h>
 #include <qrcode.h>
 
 #include "../app/WidgetLayout.h"
@@ -29,6 +30,29 @@ String htmlEscape(const String& text) {
         }
     }
     return out;
+}
+
+// 16 hex digits, new at every start
+String makeToken() {
+    char text[17];
+    snprintf(text, sizeof(text), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+    return text;
+}
+
+// The calendar is downloaded over HTTPS; webcal:// is the same
+bool isCalendarLink(const String& link) {
+    return link.startsWith("webcal://") || link.startsWith("https://");
+}
+
+// "https://calendar.google.com/calendar/ical/.../basic.ics" -> "calendar.google.com".
+// The rest of the link is the secret part, so pages only show this.
+String linkHost(const String& link) {
+    int start = link.indexOf("://");
+    start = start < 0 ? 0 : start + 3;
+    int end = link.indexOf('/', start);
+    String host = link.substring(start, end < 0 ? link.length() : end);
+    int at = host.lastIndexOf('@');  // No user name or password either
+    return at < 0 ? host : host.substring(at + 1);
 }
 
 // Special characters in Wi-Fi QR codes need a backslash
@@ -136,6 +160,9 @@ const char* const ICON_CROSS =
 
 void SetupPortal::begin(Settings& s) {
     settings = &s;
+    if (formToken.length() == 0) {
+        formToken = makeToken();
+    }
 
     // The home-network server restarts below on the setup Wi-Fi
     if (lanOn) {
@@ -158,7 +185,7 @@ void SetupPortal::begin(Settings& s) {
     delay(100);
 
     // Look for networks before the setup Wi-Fi is on: that works best
-    scan();
+    scan(false);
 
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAPConfig(AP_IP, AP_IP, IPAddress(255, 255, 255, 0));
@@ -179,6 +206,10 @@ void SetupPortal::addRoutes() {
     if (routesAdded) {
         return;
     }
+    // Read by handleClaude()
+    static const char* headers[] = {"Origin", "Content-Type"};
+    server.collectHeaders(headers, 2);
+
     server.on("/", HTTP_GET, [this]() { handleRoot(); });
     server.on("/save", HTTP_POST, [this]() { handleSave(); });
     server.on("/status", HTTP_GET, [this]() { handleStatus(); });
@@ -202,6 +233,9 @@ void SetupPortal::startLan(Settings& s) {
         return;
     }
     settings = &s;
+    if (formToken.length() == 0) {
+        formToken = makeToken();
+    }
     addRoutes();
     server.begin();
     if (MDNS.begin("desk")) {
@@ -382,14 +416,17 @@ void SetupPortal::loopSwitch() {
 // ---------- Wi-Fi scan ----------
 
 // Look for networks and wait for the result (2-4 s)
-void SetupPortal::scan() {
+void SetupPortal::scan(bool onHomeWifi) {
     unsigned long start = millis();
     WiFi.scanDelete();
     int16_t found = WiFi.scanNetworks(false, false, false, 300);
     if (found < 0) {
-        // Usually busy with a connection attempt: stop it and try once more
+        // Usually busy with a connection attempt. During setup it can be
+        // stopped; on the home Wi-Fi that would drop the page being served.
         Serial.printf("Setup: Wi-Fi scan failed (%d), trying again\n", found);
-        WiFi.disconnect();
+        if (!onHomeWifi) {
+            WiFi.disconnect();
+        }
         delay(200);
         found = WiFi.scanNetworks(false, false, false, 300);
     }
@@ -451,7 +488,22 @@ void SetupPortal::sendPage(const String& body, int refreshSeconds) {
     html += body;
     html += "</main></body></html>";
     server.sendHeader("Cache-Control", "no-store");
+    server.sendHeader("X-Frame-Options", "DENY");  // Other sites can't show the forms inside theirs
     server.send(200, "text/html", html);
+}
+
+String SetupPortal::tokenField() const {
+    return "<input type=hidden name=t value=" + formToken + ">";
+}
+
+bool SetupPortal::validToken() {
+    return formToken.length() > 0 && server.arg("t") == formToken;
+}
+
+// After a restart the token is new, so an old page lands here too
+void SetupPortal::sendExpired() {
+    Serial.println("Web: form without a valid token, ignored");
+    sendStatusPage(ICON_CROSS, "Page expired", "Open the page again and try once more.", "Back");
 }
 
 // Centered result page: icon, title, text and an optional button
@@ -487,6 +539,7 @@ void SetupPortal::handleRoot() {
     body.reserve(2000 + networkCount * 420);
     body += "<div class=logo></div><h1>Desk setup</h1><p class=sub>Connect your display to Wi-Fi.</p>";
     body += "<form method=post action=/save onsubmit=\"b.disabled=true;b.textContent='Connecting...'\">";
+    body += tokenField();
     // Selected: the saved network, or the strongest one
     String preselect = settings->hasWifi() || networkCount == 0 ? settings->wifiSsid : networks[0].ssid;
     body += wifiFields(preselect, "/scan");
@@ -578,7 +631,7 @@ void SetupPortal::handleScan() {
         return;
     }
     if (state != State::CONNECTING) {
-        scan();  // The page waits a few seconds for the result
+        scan(false);  // The page waits a few seconds for the result
     }
     redirectToRoot();
 }
@@ -586,6 +639,10 @@ void SetupPortal::handleScan() {
 void SetupPortal::handleSave() {
     if (state == State::OFF) {
         redirectToRoot();  // At home the Wi-Fi is changed on /wifi
+        return;
+    }
+    if (!validToken()) {
+        sendExpired();
         return;
     }
     String ssid, password;
@@ -684,7 +741,7 @@ function save(){var v=$("save");v.disabled=true;v.textContent="Saving...";var x=
  x.open("POST","/widgets");x.setRequestHeader("Content-Type","application/x-www-form-urlencoded");
  x.onload=function(){if(x.status==200){dirty=false;draw()}else{v.disabled=false;v.textContent="Try again"}};
  x.onerror=function(){v.disabled=false;v.textContent="Try again"};
- x.send("layout="+encodeURIComponent(ser()))}
+ x.send("layout="+encodeURIComponent(ser())+"&t="+TOK)}
 draw();
 )JS";
 
@@ -726,13 +783,18 @@ void SetupPortal::handleWidgets() {
     for (uint8_t t = 0; t < WIDGET_TYPE_COUNT; t++) {
         body += String(t > 0 ? "," : "") + "[\"" + widgetCode(t) + "\",\"" + widgetName(t) + "\"]";
     }
-    body += String("],DEF=\"") + DEFAULT_WIDGETS + "\",CUR=\"" + htmlEscape(settings->widgets) + "\";";
+    body += String("],DEF=\"") + DEFAULT_WIDGETS + "\",CUR=\"" + htmlEscape(settings->widgets) + "\",TOK=\"" +
+            formToken + "\";";
     body += EDITOR_SCRIPT;
     body += "</script>";
     sendPage(body);
 }
 
 void SetupPortal::handleWidgetsSave() {
+    if (!validToken()) {
+        server.send(403, "text/plain", "page expired, open it again");  // The editor shows "Try again"
+        return;
+    }
     char layout[160];
     normalizeWidgets(server.arg("layout").c_str(), layout, sizeof(layout));  // Empty is fine: no widgets
     settings->widgets = layout;
@@ -812,6 +874,7 @@ void SetupPortal::handleSettings() {
             "for the Claude widget.</p>";
 
     body += "<form method=post action=/settings>";
+    body += tokenField();
 
     // Weather city: search, then pick one of the results
     body += "<div class=head><span>Weather city</span></div><div class=card>"
@@ -823,11 +886,20 @@ void SetupPortal::handleSettings() {
     body += "<input type=hidden name=lat id=la value=\"" + String(settings->cityLat, 4) + "\">";
     body += "<input type=hidden name=lon id=lo value=\"" + String(settings->cityLon, 4) + "\">";
 
-    // Calendar link
-    body += "<div class=head><span>Calendar link</span><span>Optional</span></div>"
-            "<div class=card><input class=field name=cal inputmode=url autocapitalize=none autocorrect=off "
-            "spellcheck=false placeholder=\"webcal://...\" value=\"" +
-            htmlEscape(settings->calendarUrl) + "\"></div>";
+    // Calendar link. The saved one is a secret address: only its site is shown,
+    // and an empty field keeps it.
+    bool hasCalendar = settings->calendarUrl.length() > 0;
+    body += "<div class=head><span>Calendar link</span><span>Optional</span></div><div class=card>";
+    if (hasCalendar) {
+        body += "<div class=row><span>" + htmlEscape(linkHost(settings->calendarUrl)) +
+                "</span><span>Saved</span></div>"
+                "<label class=net><input type=checkbox name=calclear value=1>"
+                "<span class=name>Remove the saved link</span></label>";
+    }
+    body += "<input class=field name=cal inputmode=url autocapitalize=none autocorrect=off spellcheck=false "
+            "placeholder=\"";
+    body += hasCalendar ? "New link, or leave empty to keep it" : "webcal://...";
+    body += "\"></div>";
     body += "<p class=note>The iCal or webcal link from Tuudo, Google Calendar or Outlook.</p>";
     body += "<button class=btn>Save</button></form>";
 
@@ -847,14 +919,33 @@ void SetupPortal::handleSettingsSave() {
         redirectToRoot();
         return;
     }
-    String city = server.arg("city");
-    city.trim();
-    float lat = server.arg("lat").toFloat();
-    float lon = server.arg("lon").toFloat();
+    if (!validToken()) {
+        sendExpired();
+        return;
+    }
+
+    // Calendar link: a new one, removed, or kept when the field is empty
     String calendar = server.arg("cal");
     calendar.trim();
+    if (server.arg("calclear") == "1") {
+        calendar = "";
+    } else if (calendar.length() == 0) {
+        calendar = settings->calendarUrl;
+    } else if (!isCalendarLink(calendar)) {
+        sendStatusPage(ICON_CROSS, "Not saved", "The calendar link should start with webcal:// or https://.",
+                       "Back");
+        return;
+    }
 
-    bool cityValid = city.length() > 0 && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+    // Weather city: only when all three fields came (toFloat() of "" is 0)
+    String city = server.arg("city");
+    city.trim();
+    String latText = server.arg("lat");
+    String lonText = server.arg("lon");
+    float lat = latText.toFloat();
+    float lon = lonText.toFloat();
+    bool cityValid = city.length() > 0 && latText.length() > 0 && lonText.length() > 0 && lat >= -90 &&
+                     lat <= 90 && lon >= -180 && lon <= 180;
     if (cityValid && (city != settings->cityName || lat != settings->cityLat || lon != settings->cityLon)) {
         settings->cityName = city;
         settings->cityLat = lat;
@@ -894,12 +985,13 @@ void SetupPortal::handleWifiPage() {
         redirectToRoot();
         return;
     }
-    scan();  // A few seconds; the page opens with a fresh list
+    scan(true);  // A few seconds; the page opens with a fresh list
     String body;
     body.reserve(2400 + networkCount * 420);
     body += "<a class=back href=/>&lsaquo; Settings</a><h1>Wi-Fi</h1>";
     body += "<p class=sub>The display is on <b>" + htmlEscape(settings->wifiSsid) + "</b>.</p>";
     body += "<form method=post action=/wifi onsubmit=\"b.disabled=true;b.textContent='Switching...'\">";
+    body += tokenField();
     body += wifiFields(settings->wifiSsid, "/wifi");
     body += "<button class=btn id=b>Switch network</button>";
     body += "<p class=foot>If the new network doesn't work, the display goes back to <b>" +
@@ -910,6 +1002,10 @@ void SetupPortal::handleWifiPage() {
 void SetupPortal::handleWifiSave() {
     if (state != State::OFF || switchState == Switch::PENDING || switchState == Switch::SWITCHING) {
         redirectToRoot();
+        return;
+    }
+    if (!validToken()) {
+        sendExpired();
         return;
     }
     String ssid, password;
@@ -957,21 +1053,33 @@ void SetupPortal::handleWifiStatus() {
 
 // ---------- Claude usage (browser extension) ----------
 
-// The extension runs in the user's browser; allow its requests from there
-static void allowBrowser(WebServer& server) {
-    server.sendHeader("Access-Control-Allow-Origin", "*");
+// The extension (tools/claude-usage-extension) runs in the user's browser and
+// posts JSON. Only extensions get CORS permission, web pages don't: then a
+// page can't send JSON here either, the browser asks first (OPTIONS) and stops.
+void SetupPortal::allowExtension() {
+    String origin = server.header("Origin");
+    if (!origin.startsWith("chrome-extension://")) {
+        return;
+    }
+    server.sendHeader("Access-Control-Allow-Origin", origin);
+    server.sendHeader("Vary", "Origin");
     server.sendHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
     server.sendHeader("Access-Control-Allow-Private-Network", "true");
 }
 
 void SetupPortal::handleClaudePreflight() {
-    allowBrowser(server);
+    allowExtension();
     server.send(204, "text/plain", "");
 }
 
 void SetupPortal::handleClaude() {
-    allowBrowser(server);
+    allowExtension();
+    // A form or text/plain body could come from any web page without asking first
+    if (!server.header("Content-Type").startsWith("application/json")) {
+        server.send(415, "text/plain", "send JSON (Content-Type: application/json)");
+        return;
+    }
     ClaudeUsage usage;
     if (!parseClaudeUsage(server.arg("plain").c_str(), usage)) {
         server.send(400, "text/plain", "expected {\"session\":54,\"weekly\":29,...}");

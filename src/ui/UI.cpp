@@ -33,21 +33,15 @@ void UI::onRotate(int steps) {
         menuPage.move(steps);  // Change the selected line
         redrawNeeded = true;
     } else if (currentPage == CALENDAR) {
-        calendarPage.move(*data, steps);  // Next or previous day
+        calendarPage.move(*data, steps);  // Next or previous day (week in the week view)
         redrawNeeded = true;
     } else if (currentPage == ELECTRICITY) {
         electricityPage.toggleDay();  // Today <-> tomorrow
-    if (currentPage == POMODORO) {
+        redrawNeeded = true;
+    } else if (currentPage == POMODORO) {
         onPomodoroRotate(steps);
-    } else if (currentPage == CALENDAR) {
-        // "Turn: mode", Calendar stays selected to come back
-        menuPage.select(MenuPage::CALENDAR);
-        openPage(MENU);
     } else if (currentPage == HOME) {
         openPage(MENU);
-    } else {
-        menuPage.move(steps);
-        redrawNeeded = true;
     }
 }
 
@@ -67,18 +61,19 @@ void UI::onPress() {
         return;
     }
 
-    // Outside the menu, press opens it; in the menu it opens the selected line
-    if (currentPage != MENU) {
-        openPage(MENU);
-        return;
-    }
     if (currentPage == POMODORO) {
         onPomodoroPress();
         return;
     }
     if (currentPage == CALENDAR) {
-        calendarPage.next();
+        calendarPage.toggleView();  // Day and week view
         redrawNeeded = true;
+        return;
+    }
+
+    // Elsewhere, press opens the menu; in the menu it opens the selected line
+    if (currentPage != MENU) {
+        openPage(MENU);
         return;
     }
 
@@ -86,8 +81,11 @@ void UI::onPress() {
         case MenuPage::DASHBOARD:
             openPage(HOME);
             break;
+        case MenuPage::POMODORO:
+            openPage(POMODORO);
+            break;
         case MenuPage::CALENDAR:
-            calendarPage.open();  // Today
+            calendarPage.open();  // Today, day view
             openPage(CALENDAR);
             break;
         case MenuPage::ELECTRICITY:
@@ -97,12 +95,6 @@ void UI::onPress() {
         case MenuPage::SETTINGS:
             settingsOpened = true;  // main.cpp fills in the address and QR code
             openPage(SETTINGS);
-        case MenuPage::POMODORO:
-            openPage(POMODORO);
-            break;
-        case MenuPage::CALENDAR:
-            calendarPage.showToday();
-            openPage(CALENDAR);
             break;
         default:
             // TODO: Open the other mode pages when they are implemented
@@ -123,10 +115,7 @@ void UI::onLongPress() {
         setupRestartRequested = true;
     } else if (currentPage == POMODORO) {
         onPomodoroLongPress();
-    } else if (currentPage == CALENDAR) {
-        calendarPage.toggleView();  // Day and week view
-        redrawNeeded = true;
-    } else if (currentPage != HOME) {
+    } else {
         openPage(HOME);
     }
 }
@@ -143,6 +132,8 @@ void UI::onTouch() {
 
     // Switch between the two home pages; from anywhere else, the widget page
     openPage(currentPage == WIDGETS ? HOME : WIDGETS);
+}
+
 // ---------- Pomodoro ----------
 
 void UI::onPomodoroRotate(int steps) {
@@ -256,12 +247,10 @@ void UI::update() {
             break;
         case SETUP:
             setupPage.draw(*display, *data);
+            break;
         case POMODORO:
             pomodoroPage.draw(*display, *data, pomodoro, millis());
             pomodoroDrawnMinutes = pomodoro.minutesLeft();
-            break;
-        case CALENDAR:
-            calendarPage.draw(*display, *data);
             break;
         case SLEEP:
             sleepPage.draw(*display, *data);
@@ -279,8 +268,8 @@ bool UI::takeRefreshRequest() {
 }
 
 void UI::enterSleep() {
-    if (pomodoro.isActive()) {
-        return;  // Keep the timer visible
+    if (currentPage == SETUP || pomodoro.isActive()) {
+        return;  // Keep the QR code or the timer visible
     }
     if (currentPage != SLEEP) {
         openPage(SLEEP);
@@ -343,31 +332,25 @@ void UI::showNextPage() {
                 redrawNeeded = true;
             }
             break;
+        case POMODORO:
+            calendarPage.open();
+            openPage(CALENDAR);
+            break;
         case CALENDAR:
-            electricityPage.open();
-            openPage(ELECTRICITY);
+            // Day view first, then the week view
+            if (calendarPage.isWeekView()) {
+                electricityPage.open();
+                openPage(ELECTRICITY);
+            } else {
+                calendarPage.toggleView();
+                redrawNeeded = true;
+            }
             break;
         case ELECTRICITY:
             openPage(SLEEP);
             break;
         case SETUP:
             break;  // Setup stays until it is done
-        case POMODORO:
-            calendarPage.showToday();
-            if (calendarPage.isWeekView()) {
-                calendarPage.toggleView();
-            }
-            openPage(CALENDAR);
-            break;
-        case CALENDAR:
-            // Day view first, then the week view
-            if (calendarPage.isWeekView()) {
-                openPage(SLEEP);
-            } else {
-                calendarPage.toggleView();
-                redrawNeeded = true;
-            }
-            break;
         case SLEEP:
             openPage(HOME);
             break;

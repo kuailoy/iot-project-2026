@@ -84,6 +84,8 @@ With the phone on the same Wi-Fi, open `http://desk.local` (or the IP / QR code 
 - **Calendar link**
 - **Wi-Fi**: switch to another network. If the new one doesn't work within ~20 s, the display goes back to the old one.
 
+There is no login: anyone on the same Wi-Fi can open the page. Other web sites can't use it through your browser
+(the forms need a token from the page itself), and the saved calendar link is never shown again.
 All settings are kept in the ESP32's flash (`src/app/Settings.cpp`), not in the code.
 Only 2.4 GHz networks work; WPA2-Enterprise networks such as eduroam are not supported.
 Code: `src/services/SetupPortal.cpp` (setup Wi-Fi, web page), `src/ui/pages/SetupPage.cpp` (screen).
@@ -111,13 +113,17 @@ The device reads any calendar that has an iCal (`.ics` / `webcal://`) link: Tuud
 
 1. Get the link. Tuudo: the calendar sync link. Google: Settings → your calendar → "Secret address in iCal format".
 2. Paste it on the settings page (`desk.local`). Keep it private: anyone with the link can read the calendar.
+   After saving, the page only shows the link's site; leave the field empty to keep it.
    `CALENDAR_ICS_URL` in `.env.local` is only used until a link is saved there.
 3. The calendar is downloaded every 30 minutes, and when you hold the knob on the Home page.
 
-Open it with the touch button, or from the menu → Calendar. It shows today's events; turn the knob for the next or previous day. Press opens the menu, hold goes back to Home.
+Open it from the menu → Calendar. The day view shows the month with a dot on days that have events, and the events of the chosen day;
+the week view shows seven columns. Turn the knob for the next or previous day (week in the week view), press to switch between the two views,
+hold to go back to Home.
 
-The parser (`src/services/CalendarService.cpp`) keeps events from this week's Monday to 8 weeks ahead (at most 200); the weeks after this one are used for the next event on Home.
+The parser (`src/services/IcsParser.cpp`, download in `CalendarService.cpp`) keeps events from this week's Monday to 8 weeks ahead (at most 200); the weeks after this one are used for the next event on Home.
 It handles recurring events, excluded dates, moved or cancelled occurrences and all-day events.
+If a feed has more than that (or more than 48 recurring events), the days that may be missing events show "Too many events" instead of looking free.
 Times with a time zone are read as Finnish time, and titles are cut before course codes ("IoT Project 1 IT24SP (IT00BD93-3002)/ ..." becomes "IoT Project 1 IT24SP").
 
 ## Electricity price

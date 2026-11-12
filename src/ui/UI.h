@@ -52,9 +52,8 @@ public:
     bool takeSetupRestart();             // Hold on the setup page
     bool takeSetupCancel();              // Press on the setup page (only if Wi-Fi was set up before)
 
-    // Show the sleep screen, any input wakes up to Home (not during setup)
     // Show the sleep screen, any input wakes up to Home.
-    // Ignored while a Pomodoro timer is running.
+    // Ignored during setup and while a Pomodoro timer is running.
     void enterSleep();
     bool isAsleep() const { return currentPage == SLEEP; }
 
@@ -72,7 +71,6 @@ private:
         SETTINGS,
         SETUP,
         POMODORO,
-        CALENDAR,
         SLEEP
     };
 
@@ -100,7 +98,6 @@ private:
     SettingsPage settingsPage;
     WidgetPage widgetPage;
     PomodoroPage pomodoroPage;
-    CalendarPage calendarPage;
 
     Pomodoro pomodoro;
     int pomodoroDrawnMinutes = -1;

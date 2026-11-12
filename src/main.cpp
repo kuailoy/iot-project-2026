@@ -28,7 +28,6 @@
 #include "app/AppData.h"
 #include "services/CalendarService.h"
 #include "services/WeatherService.h"
-#include "services/CalendarService.h"
 #include "services/ElectricityService.h"
 #include "app/DateUtil.h"
 #include "app/Settings.h"
@@ -41,9 +40,6 @@
 // Wi-Fi and the calendar link are set on the setup page (Settings, SetupPortal).
 #ifndef WEATHER_API_KEY
 #define WEATHER_API_KEY ""
-#endif
-#ifndef CALENDAR_URL
-#define CALENDAR_URL ""  // iCal feed, webcal:// or https://
 #endif
 
 // ---------- Settings ----------
@@ -105,7 +101,6 @@ void updateDisplay();
 void handleInput();
 void updateWeather(bool force);
 void updateCalendar(bool force);
-void updateNextEvent();
 void updatePrices(bool force);
 void showPagesInTurn();
 void connectWiFi(bool wait);
@@ -638,16 +633,6 @@ void updateWeather(bool force) {
     }
 }
 
-void updateCalendar(bool force) {
-    static unsigned long lastAttempt = 0;
-    static bool everAttempted = false;
-
-    // The time is needed to know which weeks to keep
-    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || strlen(CALENDAR_URL) == 0) {
-        return;
-    }
-
-    unsigned long interval = appData.calendar.valid ? CALENDAR_INTERVAL_MS : CALENDAR_RETRY_MS;
 static bool sameEvents(const CalendarEvent* a, const CalendarEvent* b, int count) {
     for (int i = 0; i < count; i++) {
         if (a[i].day != b[i].day || a[i].startMin != b[i].startMin || a[i].endMin != b[i].endMin ||
@@ -694,24 +679,12 @@ void updateCalendar(bool force) {
     int32_t today = DateUtil::dayOf(appData.now);
     int32_t firstDay = today - DateUtil::weekday(today);
     int32_t lastDay = today + CALENDAR_DAYS_AHEAD;
-    int32_t fromDay = monthStart < weekStart ? monthStart : weekStart;
 
-    static CalendarData fresh;  // About 4 KB, too big for the loop stack
-    String error;
-    if (!fetchCalendar(CALENDAR_URL, fromDay, today + CalendarData::DAYS_AHEAD, fresh, error)) {
-        Serial.printf("Calendar request failed: %s\n", error.c_str());
-        return;
-    }
-    Serial.printf("Calendar: %d events loaded\n", fresh.count);
     // Download into a temporary list, so a failed update keeps the old events
     std::unique_ptr<CalendarEvent[]> events(new (std::nothrow) CalendarEvent[MAX_CALENDAR_EVENTS]);
     if (!events) {
         Serial.println("Calendar: not enough RAM");
         return;
-    }
-
-    if (!fresh.sameAs(appData.calendar)) {
-        appData.calendar = fresh;
     }
 
     String error;
@@ -742,35 +715,6 @@ void updateCalendar(bool force) {
     }
 }
 
-// Home page "NEXT EVENT": the running or next event of today
-void updateNextEvent() {
-    if (!appData.timeValid || !appData.calendar.valid) {
-        return;
-    }
-
-    int32_t today = CalendarDate::fromTm(appData.now);
-    int minute = appData.now.tm_hour * 60 + appData.now.tm_min;
-    const CalendarEvent* next = appData.calendar.nextAfter(today, minute);
-
-    // The Home page redraws on the next minute anyway, so no redraw is requested here
-    appData.eventValid = next != nullptr && next->day == today;
-    if (!appData.eventValid) {
-        return;
-    }
-
-    if (next->allDay) {
-        strcpy(appData.eventTime, "Today");
-    } else {
-        int hour = (next->startMinute / 60) % 24;
-        int min = next->startMinute % 60;
-        appData.eventTime[0] = '0' + hour / 10;
-        appData.eventTime[1] = '0' + hour % 10;
-        appData.eventTime[2] = ':';
-        appData.eventTime[3] = '0' + min / 10;
-        appData.eventTime[4] = '0' + min % 10;
-        appData.eventTime[5] = '\0';
-    }
-    snprintf(appData.eventTitle, sizeof(appData.eventTitle), "%s", next->title);
 // ---------- Electricity spot price (api.spot-hinta.fi) ----------
 
 // Do we have prices for this local day?

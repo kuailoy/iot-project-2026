@@ -6,9 +6,6 @@ from pathlib import Path
 Import("env")
 
 SETTING_NAMES = (
-    "WIFI_SSID",
-    "WIFI_PASSWORD",
-    "TIME_API_KEY",
     "WEATHER_API_KEY",
     "CALENDAR_ICS_URL",
 )
@@ -17,7 +14,7 @@ if env.IsIntegrationDump():
     Return()
 
 
-def read_env_file(path):
+def read_env_file(path, ignored):
     values = {}
     if not path.exists():
         return values
@@ -35,6 +32,7 @@ def read_env_file(path):
         key = key.strip()
         value = value.strip()
         if key not in SETTING_NAMES:
+            ignored.append(key)
             continue
 
         if value.startswith(("'", '"')):
@@ -50,7 +48,8 @@ def read_env_file(path):
 
 
 project_dir = Path(env.subst("$PROJECT_DIR"))
-local_values = read_env_file(project_dir / ".env.local")
+ignored_names = []
+local_values = read_env_file(project_dir / ".env.local", ignored_names)
 
 env.Append(
     CPPDEFINES=[(name, env.StringifyMacro(local_values.get(name, ""))) for name in SETTING_NAMES]
@@ -65,3 +64,6 @@ else:
     print("No recognized non-empty settings found in .env.local")
 if missing_names:
     print("Not set: " + ", ".join(missing_names))
+if ignored_names:
+    # e.g. an old CALENDAR_URL: the firmware never sees it, so say so
+    print("Ignored in .env.local (unknown names, see .env.example): " + ", ".join(ignored_names))

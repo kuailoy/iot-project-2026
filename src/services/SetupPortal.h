@@ -24,6 +24,11 @@
 // All other settings are on the home Wi-Fi at http://desk.local (or the
 // device's IP), see startLan(): widgets of the second home page, weather
 // city, calendar link, and changing the Wi-Fi (falls back to the old one).
+//
+// There is no login: anyone on the home Wi-Fi can open these pages. Forms
+// carry a random token made at each start, so other web sites open in a
+// browser on the same network can't send them (cross-site requests), and
+// the saved calendar link (a secret address) is never sent back to a page.
 class SetupPortal {
 public:
     enum class State : uint8_t {
@@ -116,6 +121,12 @@ private:
     bool changed = false;
     String apName;
 
+    // Random per start, in every form (see the comment at the top)
+    String formToken;
+    String tokenField() const;   // Hidden form field with the token
+    bool validToken();           // The request carries it
+    void sendExpired();          // Answer to a form without it
+
     Network networks[MAX_NETWORKS];
     int networkCount = 0;
 
@@ -126,7 +137,9 @@ private:
     String failReason;
 
     void setState(State next);
-    void scan();
+    // Look for networks. onHomeWifi: the device is serving a page over the
+    // home Wi-Fi, so a failed scan must not stop that connection.
+    void scan(bool onHomeWifi);
 
     void addRoutes();
     void handleRoot();
@@ -140,6 +153,7 @@ private:
     void handleWifiStatus();
     void handleClaude();
     void handleClaudePreflight();
+    void allowExtension();  // CORS headers for the Chrome extension only
     // Network list and password fields, shared by setup and the Wi-Fi page
     String wifiFields(const String& preselect, const char* refreshLink);
     // ssid / password from a submitted form; false (and a page sent) if invalid

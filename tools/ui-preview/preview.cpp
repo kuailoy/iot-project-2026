@@ -5,20 +5,24 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <memory>
+#include <string>
 
 #include <Adafruit_GFX.h>
 
 #include "Components.h"
+#include "../app/CalendarData.h"
 #include "../app/DateUtil.h"
 #include "pages/CalendarPage.h"
 #include "pages/ElectricityPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/PomodoroPage.h"
 #include "pages/SettingsPage.h"
 #include "pages/SetupPage.h"
 #include "pages/WidgetPage.h"
 #include "pages/SleepPage.h"
-#include "../../src/services/IcalParser.h"
+#include "../../src/services/IcsParser.h"
 
 static bool savePbm(GFXcanvas1& canvas, const char* path) {
     FILE* file = fopen(path, "wb");
@@ -46,7 +50,6 @@ static AppData demoData() {
     data.now.tm_mon = 9;   // October (0 = January)
     data.now.tm_wday = 1;  // Monday
     data.now.tm_yday = 277;
-    data.now.tm_year = 126;  // 2026
 
     data.weatherValid = true;
     data.outdoorTemp = 8;
@@ -133,11 +136,11 @@ static AppData demoData() {
 static const uint32_t MINUTE_MS = 60000UL;
 static const int32_t START_CLOCK = 10 * 3600 + 23 * 60;  // First session starts 10:23
 
-static int checksFailed = 0;
+static int checksFailed = 0;  // All checks, main() fails if any did
 
 static void check(bool ok, const char* what) {
     if (!ok) {
-        printf("Pomodoro check FAILED: %s\n", what);
+        printf("Check FAILED: %s\n", what);
         checksFailed++;
     }
 }
@@ -171,6 +174,7 @@ static void drawPomodoro(GFXcanvas1& canvas, const AppData& data, const Pomodoro
 
 // Every timer state, also checks the timer logic on the way
 static void savePomodoroPages(GFXcanvas1& canvas, const AppData& data) {
+    int failedBefore = checksFailed;
     Pomodoro ready;
     drawPomodoro(canvas, data, ready, 0, "out/pomodoro-1-ready.pbm");
     ready.adjustFocus(1);
@@ -222,7 +226,15 @@ static void savePomodoroPages(GFXcanvas1& canvas, const AppData& data) {
     check(cycle.cycleFocusMinutes() == 100, "4 x 25 = 100 min");
     drawPomodoro(canvas, data, cycle, t, "out/pomodoro-6-cycle-done.pbm");
 
-    if (checksFailed == 0) {
+    // Pause pressed just after the focus ended (during a slow refresh): the
+    // alert shows, not a paused timer at 0 min that can't be stopped
+    Pomodoro late;
+    late.start(0, clockAt(0));
+    t = late.focusMinutes() * MINUTE_MS + 2000;
+    late.pause(t, clockAt(t));
+    check(late.state() == Pomodoro::FOCUS_DONE, "pause after the end shows the break alert");
+
+    if (checksFailed == failedBefore) {
         printf("Pomodoro checks passed\n");
     }
 }
@@ -261,31 +273,106 @@ static const char* const DEMO_ICS =
     "BEGIN:VEVENT\r\nSUMMARY:Too late\r\nDTSTART:20270301T100000\r\nEND:VEVENT\r\n"
     "END:VCALENDAR";
 
-static void loadDemoCalendar(AppData& data) {
-    int32_t today = CalendarDate::fromTm(data.now);
-    IcalParser parser(data.calendar, today - 7, today + CalendarData::DAYS_AHEAD);
-
-    // Feed in small pieces like the network does
-    size_t length = strlen(DEMO_ICS);
-    for (size_t i = 0; i < length; i += 7) {
-        parser.feed(DEMO_ICS + i, length - i < 7 ? length - i : 7);
+// Feeds an iCal file to the parser in small pieces like the network does.
+// Returns the number of events, -1 if there was not enough memory.
+static int parseIcs(const char* ics, int32_t firstDay, int32_t lastDay, CalendarEvent* events, int capacity,
+                    int32_t& completeUntil) {
+    std::unique_ptr<IcsParser> parser(IcsParser::create(firstDay, lastDay, events, capacity));
+    if (!parser) {
+        return -1;
     }
-    parser.finish();
-    data.calendar.valid = true;
+    size_t length = strlen(ics);
+    for (size_t i = 0; i < length; i += 7) {
+        parser->feed((const uint8_t*)ics + i, length - i < 7 ? length - i : 7);
+    }
+    parser->finish();
+    check(parser->sawCalendar(), "the file is a calendar");
+    completeUntil = parser->completeUntil();
+    return parser->count();
+}
 
-    const CalendarData& calendar = data.calendar;
-    check(parser.eventsSeen() == 18, "parser sees every event");
-    check(calendar.count == 16, "cancelled and far away events are skipped");
-    check(calendar.countOn(today) == 5, "five events today");
-    check(strcmp(calendar.events[0].title, "Finnish class") == 0, "title is cut before brackets");
-    check(calendar.events[1].startMinute == 10 * 60 + 30, "events are sorted by time");
-    check(strcmp(calendar.events[1].title, "Project meeting") == 0, "folded line, alarm ignored");
-    int sync = calendar.firstOn(today + 2) + 1;
-    check(strcmp(calendar.events[sync].title, "Sync, weekly") == 0, "escaped comma");
-    int holiday = calendar.firstOn(today + 9);
-    check(holiday >= 0 && calendar.events[holiday].allDay, "all-day event");
-    check(CalendarDate::isoWeek(today) == 41, "5 Oct 2026 is in week 41");
-    check(CalendarDate::weekdayOf(today) == 0, "5 Oct 2026 is a Monday");
+// "20261005", for the generated test feeds
+static std::string icsDate(int32_t day) {
+    int year, month, dayOfMonth;
+    DateUtil::civilFromDays(day, year, month, dayOfMonth);
+    char text[12];
+    snprintf(text, sizeof(text), "%04d%02d%02d", year, month, dayOfMonth);
+    return text;
+}
+
+// Loads DEMO_ICS for the same days as updateCalendar() in main.cpp
+static void loadDemoCalendar(AppData& data) {
+    int32_t today = DateUtil::dayOf(data.now);
+    int32_t firstDay = today - DateUtil::weekday(today);
+    int32_t lastDay = today + CALENDAR_DAYS_AHEAD;
+    int32_t completeUntil = 0;
+    data.eventCount = parseIcs(DEMO_ICS, firstDay, lastDay, data.events, MAX_CALENDAR_EVENTS, completeUntil);
+    data.calendarValid = true;
+    data.calendarFirstDay = firstDay;
+    data.calendarLastDay = completeUntil;
+
+    int first;
+    check(data.eventCount == 16, "cancelled and far away events are skipped");
+    check(completeUntil == lastDay, "nothing left out of the demo feed");
+    check(CalendarData::eventsOnDay(data, today, &first) == 5, "five events today");
+    check(strcmp(data.events[0].title, "Finnish class") == 0, "title is cut before brackets");
+    check(data.events[1].startMin == 10 * 60 + 30, "events are sorted by time");
+    check(strcmp(data.events[1].title, "Project meeting") == 0, "folded line, alarm ignored");
+    CalendarData::eventsOnDay(data, today + 2, &first);
+    check(first >= 0 && strcmp(data.events[first + 1].title, "Sync, weekly") == 0, "escaped comma");
+    CalendarData::eventsOnDay(data, today + 9, &first);
+    check(first >= 0 && data.events[first].allDay, "all-day event");
+    check(DateUtil::isoWeek(today) == 41, "5 Oct 2026 is in week 41");
+    check(DateUtil::weekday(today) == 0, "5 Oct 2026 is a Monday");
+}
+
+// More recurring events or changes than the parser can keep: the days they
+// touch must be unknown, not shown as free
+static void checkParserLimits(int32_t today) {
+    static CalendarEvent events[MAX_CALENDAR_EVENTS];
+    int32_t lastDay = today + CALENDAR_DAYS_AHEAD;
+    int32_t completeUntil = 0;
+    char text[160];
+
+    // One weekly series more than fits; the extra one starts next Monday
+    std::string ics = "BEGIN:VCALENDAR\r\n";
+    for (int i = 0; i <= IcsParser::MAX_RECURRING; i++) {
+        int32_t start = i < IcsParser::MAX_RECURRING ? today : today + 7;
+        snprintf(text, sizeof(text),
+                 "BEGIN:VEVENT\r\nUID:series-%d\r\nSUMMARY:Series %d\r\nDTSTART:%sT%02d0000\r\n"
+                 "RRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n",
+                 i, i, icsDate(start).c_str(), 8 + i % 10);
+        ics += text;
+    }
+    ics += "END:VCALENDAR\r\n";
+    int count = parseIcs(ics.c_str(), today, lastDay, events, MAX_CALENDAR_EVENTS, completeUntil);
+    check(count == 2 * IcsParser::MAX_RECURRING, "every series that fits is expanded");
+    check(completeUntil == today + 6, "a left-out series makes its days unknown");
+
+    // Two daily series, with one cancelled occurrence more than fits
+    const int perSeries = IcsParser::MAX_OVERRIDES / 2 + 1;  // 33 + 32 = MAX_OVERRIDES + 1
+    ics = "BEGIN:VCALENDAR\r\n";
+    for (int s = 0; s < 2; s++) {
+        snprintf(text, sizeof(text),
+                 "BEGIN:VEVENT\r\nUID:daily-%d\r\nSUMMARY:Daily %d\r\nDTSTART:%sT090000\r\n"
+                 "RRULE:FREQ=DAILY;COUNT=40\r\nEND:VEVENT\r\n",
+                 s, s, icsDate(today).c_str());
+        ics += text;
+    }
+    for (int s = 0; s < 2; s++) {
+        for (int d = 0; d < perSeries - s; d++) {
+            snprintf(text, sizeof(text),
+                     "BEGIN:VEVENT\r\nUID:daily-%d\r\nRECURRENCE-ID:%sT090000\r\nSTATUS:CANCELLED\r\n"
+                     "DTSTART:%sT090000\r\nEND:VEVENT\r\n",
+                     s, icsDate(today + d).c_str(), icsDate(today + d).c_str());
+            ics += text;
+        }
+    }
+    ics += "END:VCALENDAR\r\n";
+    count = parseIcs(ics.c_str(), today, lastDay, events, MAX_CALENDAR_EVENTS, completeUntil);
+    // The change left out is the last one: series 1 on day perSeries - 2
+    check(count > 0 && events[0].day > today, "cancelled occurrences are hidden");
+    check(completeUntil == today + (perSeries - 2) - 1, "a left-out change makes its day unknown");
 }
 
 static void drawCalendar(GFXcanvas1& canvas, const AppData& data, CalendarPage& page,
@@ -298,32 +385,43 @@ static void drawCalendar(GFXcanvas1& canvas, const AppData& data, CalendarPage& 
 static void saveCalendarPages(GFXcanvas1& canvas, const AppData& source) {
     static AppData data;  // Large because of the event list
     data = source;
-    checksFailed = 0;
+    int failedBefore = checksFailed;
     loadDemoCalendar(data);
+    int32_t today = DateUtil::dayOf(data.now);
+    checkParserLimits(today);
 
     CalendarPage page;
+    page.open();
     drawCalendar(canvas, data, page, "out/calendar-1-month.pbm");
 
-    page.next();  // Tomorrow has no events
+    page.move(data, 1);  // Tomorrow has no events
     drawCalendar(canvas, data, page, "out/calendar-2-free-day.pbm");
 
-    page.showToday();
+    page.open();
     page.toggleView();
     drawCalendar(canvas, data, page, "out/calendar-3-week.pbm");
 
-    // 30 Nov 2026: November needs six rows of weeks
-    page.toggleView();
-    for (int i = 0; i < CalendarPage::MAX_DAYS_AHEAD; i++) {
-        page.next();
-    }
+    // Turning far ahead stops at the last loaded day, 30 Nov 2026:
+    // November needs six rows of weeks
+    page.open();
+    page.move(data, 100);
     drawCalendar(canvas, data, page, "out/calendar-4-six-weeks.pbm");
 
-    // Before the first download
-    data.calendar = CalendarData();
-    page.showToday();
-    drawCalendar(canvas, data, page, "out/calendar-5-not-loaded.pbm");
+    // The feed had too many events: the days after calendarLastDay are unknown
+    page.open();
+    page.move(data, 3);
+    data.calendarLastDay = today + 1;
+    drawCalendar(canvas, data, page, "out/calendar-5-cut.pbm");
+    page.toggleView();
+    drawCalendar(canvas, data, page, "out/calendar-6-week-cut.pbm");
 
-    if (checksFailed == 0) {
+    // Before the first download
+    data.calendarValid = false;
+    data.eventCount = 0;
+    page.open();
+    drawCalendar(canvas, data, page, "out/calendar-7-not-loaded.pbm");
+
+    if (checksFailed == failedBefore) {
         printf("Calendar checks passed\n");
     }
 }
@@ -363,20 +461,9 @@ int main() {
     savePomodoroPages(canvas, data);
     saveCalendarPages(canvas, data);
 
-    printf("Saved preview images in out/\n");
-    // Calendar: today (busy), then one turn forward (Tuesday, free)
+    // 10:35, for the widget and electricity pages below
     AppData calendarData = data;
     calendarData.now.tm_min = 35;
-    CalendarPage calendar;
-    calendar.open();
-    canvas.fillScreen(COLOR_BG);
-    calendar.draw(canvas, calendarData);
-    savePbm(canvas, "out/calendar-today.pbm");
-
-    calendar.move(calendarData, 1);
-    canvas.fillScreen(COLOR_BG);
-    calendar.draw(canvas, calendarData);
-    savePbm(canvas, "out/calendar-free.pbm");
 
     // Setup page. The QR code here is only a look-alike: the real one is
     // made on the device (esp_qrcode), which doesn't build on a PC.
@@ -481,5 +568,5 @@ int main() {
     savePbm(canvas, "out/home2-claude-none.pbm");
 
     printf("Saved all pages (.pbm) in out/\n");
-    return 0;
+    return checksFailed > 0 ? 1 : 0;
 }
