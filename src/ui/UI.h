@@ -3,6 +3,7 @@
 #include "../display/EinkDisplay.h"
 
 #include "pages/CalendarPage.h"
+#include "pages/ElectricityPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
 #include "pages/SettingsPage.h"
@@ -64,6 +65,7 @@ private:
         WIDGETS,   // Second home page
         MENU,
         CALENDAR,
+        ELECTRICITY,
         SETTINGS,
         SETUP,
         SLEEP
@@ -88,6 +90,7 @@ private:
     MenuPage menuPage;
     SleepPage sleepPage;
     CalendarPage calendarPage;
+    ElectricityPage electricityPage;
     SetupPage setupPage;
     SettingsPage settingsPage;
     WidgetPage widgetPage;

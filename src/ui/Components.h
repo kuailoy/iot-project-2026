@@ -71,6 +71,14 @@ void drawHeader(Adafruit_GFX& gfx, const AppData& data);
 // Line and centered input hints at the bottom of the screen
 void drawFooter(Adafruit_GFX& gfx, const char* hints);
 
+// Bar chart of 24 hourly values (electricity prices). Bars are outlined;
+// hours fillFrom .. fillFrom + fillCount - 1 are solid (the cheapest window),
+// a small triangle points at markerHour (-1 = none). With labels, hour
+// numbers are written under the chart. Bars grow up from y + h.
+void drawPriceChart(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h,
+                    const float* values, const bool* present, int markerHour,
+                    int fillFrom, int fillCount, bool labels);
+
 // One row of a list, colors inverted when selected
 void drawMenuRow(Adafruit_GFX& gfx, int16_t y, int16_t h, const char* label,
                  const char* value, bool selected, bool showDivider);

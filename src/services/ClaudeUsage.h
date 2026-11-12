@@ -17,6 +17,3 @@ struct ClaudeUsage {
 
 // false if the text is not in the format above
 bool parseClaudeUsage(const char* json, ClaudeUsage& out);
-
-// "2026-11-04T17:30:00.294921+00:00" or "...Z" -> seconds since 1970 (UTC), 0 if invalid
-time_t parseIsoTime(const char* text);

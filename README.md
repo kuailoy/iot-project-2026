@@ -92,13 +92,16 @@ Code: `src/services/SetupPortal.cpp` (setup Wi-Fi, web page), `src/ui/pages/Setu
 
 The touch button switches between the normal Home page and a second page made of widgets.
 Its layout is edited on the settings page (`http://desk.local` → Widgets).
-The editor works like a phone home screen: drag widgets to reorder them, tap one to change its size (Small 1×1, Medium 2×1, Large 2×2 = full height, Wide 4×1), move it or remove it, and add new ones.
-Widgets: clock, date, weather, indoor (temperature, humidity, CO2), CO2, next event, today's events, Claude usage.
+The editor works like a phone home screen: drag widgets to reorder them, tap one to change its size (Small 1×1, Medium 2×1, Large 2×2, Wide 4×1), move it or remove it, and add new ones.
+Widgets: clock, date, weather, indoor (temperature, humidity, CO2), CO2, next event, today's events, Claude usage, electricity price.
 
 **Claude widget**: how much of your Claude plan's 5-hour session and weekly limit is used, with reset times.
 Claude has no official API for this, so a small Chrome extension reads it in your logged-in browser and sends
 only the numbers to the display (`POST /claude`). Setup: `tools/claude-usage-extension/README.md`.
-It looks like the Home page (same header, footer and dividing lines); between them is a 4 × 2 grid.
+
+**Electricity widget**: the spot price now and whether it is cheap; bigger sizes add the day's chart and the cheapest 3 hours.
+
+The whole screen is a 4 × 3 grid of widgets (no clock header or hint footer), with lines between them like on Home.
 Widgets are placed in order in the first free spot, so the ones that don't fit are shown on the phone as "doesn't fit".
 Code: `src/app/WidgetLayout.*` (layout), `src/ui/pages/WidgetPage.cpp` (drawing), `handleWidgets()` in `src/services/SetupPortal.cpp` (editor).
 
@@ -116,6 +119,22 @@ Open it with the touch button, or from the menu → Calendar. It shows today's e
 The parser (`src/services/CalendarService.cpp`) keeps events from this week's Monday to 8 weeks ahead (at most 200); the weeks after this one are used for the next event on Home.
 It handles recurring events, excluded dates, moved or cancelled occurrences and all-day events.
 Times with a time zone are read as Finnish time, and titles are cut before course codes ("IoT Project 1 IT24SP (IT00BD93-3002)/ ..." becomes "IoT Project 1 IT24SP").
+
+## Electricity price
+
+Finnish spot prices from the free [spot-hinta.fi](https://spot-hinta.fi) API (no key, no setup).
+The prices include VAT (25.5 %) and are shown in c/kWh; the price "now" is the current 15-minute price.
+
+Open it from the menu → Electricity (the menu line shows the price now). The page shows the price now, the day's average,
+an hourly chart (▼ = this hour) and the cheapest 3 hours in a row, filled black in the chart (for today, counted from now).
+Turn the knob for tomorrow: the prices for tomorrow come out in the afternoon (about 14:00).
+Press opens the menu, hold goes back to Home. It can also be added as a widget (see above).
+
+The API allows only one request a minute per IP; too many give HTTP 429 and can block the IP for a while.
+So the device asks rarely (`updatePrices()` in `src/main.cpp`): every 6 hours, every 30 minutes after 14:00 until tomorrow's prices are there,
+every 5 minutes while today's prices are missing, and never more often than every 2 minutes (also when you hold to refresh).
+Code: `src/services/ElectricityService.*` (download), `src/app/ElectricityData.h` (price now, daily stats, cheapest hours),
+`src/ui/pages/ElectricityPage.cpp` (page).
 
 ## E-Ink display driver
 

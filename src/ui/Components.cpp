@@ -224,4 +224,56 @@ void drawMenuRow(Adafruit_GFX& gfx, int16_t y, int16_t h, const char* label,
     }
 }
 
+
+void drawPriceChart(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h,
+                    const float* values, const bool* present, int markerHour,
+                    int fillFrom, int fillCount, bool labels) {
+    // Scale to the highest bar; negative prices draw as an empty bar
+    float top = 0.1f;
+    for (int i = 0; i < 24; i++) {
+        if (present[i] && values[i] > top) {
+            top = values[i];
+        }
+    }
+    const int16_t markerSpace = markerHour >= 0 ? 12 : 0;
+    const int16_t barArea = h - markerSpace;
+    const int16_t baseline = y + h;
+    const float pitch = w / 24.0f;
+    const int16_t barW = int16_t(pitch * 0.74f);
+
+    for (int i = 0; i < 24; i++) {
+        if (!present[i]) {
+            continue;
+        }
+        int16_t bx = x + int16_t(i * pitch);
+        int16_t bh = values[i] > 0 ? int16_t(values[i] / top * barArea + 0.5f) : 0;
+        if (bh < 3) {
+            bh = 3;  // Still visible
+        }
+        int16_t by = baseline - bh;
+        bool filled = i >= fillFrom && i < fillFrom + fillCount;
+        if (filled) {
+            gfx.fillRect(bx, by, barW, bh, COLOR_FG);
+        } else {
+            gfx.drawRect(bx, by, barW, bh, COLOR_FG);
+            gfx.drawRect(bx + 1, by + 1, barW - 2, bh - 1, COLOR_FG);
+        }
+        if (i == markerHour) {
+            int16_t cx = bx + barW / 2;
+            gfx.fillTriangle(cx - 6, by - 11, cx + 6, by - 11, cx, by - 4, COLOR_FG);
+        }
+    }
+    gfx.fillRect(x, baseline, w, 2, COLOR_FG);
+
+    if (labels) {
+        static const int HOURS[] = {0, 6, 12, 18};
+        for (int hour : HOURS) {
+            char text[4];
+            snprintf(text, sizeof(text), "%02d", hour);
+            drawText(gfx, x + int16_t(hour * pitch), baseline + 20, text, FONT_SMALL);
+        }
+        drawTextRight(gfx, x + w, baseline + 20, "23", FONT_SMALL);
+    }
+}
+
 }

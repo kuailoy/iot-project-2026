@@ -16,6 +16,15 @@ struct CalendarEvent {
     char location[24] = "";  // Room or place, "" if none
 };
 
+// Electricity spot price for 15 minutes from `start` (spot-hinta.fi)
+struct PricePoint {
+    time_t start = 0;      // UTC
+    float cents = 0;       // c/kWh including VAT (25.5 %), can be negative
+};
+
+// Today and tomorrow: 96 quarter-hours each, 92 or 100 on a summer-time change day
+constexpr int MAX_PRICES = 200;
+
 // About 15 KB of RAM. Enough for 8 weeks of a full student timetable.
 constexpr int MAX_CALENDAR_EVENTS = 200;
 
@@ -68,6 +77,11 @@ struct AppData {
     // QR code shown on the setup or settings page
     uint8_t qrSize = 0;                       // Modules per side, 0 = no code
     uint8_t qrCode[(41 * 41 + 7) / 8] = {};   // 1 bit per module, row by row, MSB first
+
+    // ---------- Electricity spot price (spot-hinta.fi, see ElectricityData.h) ----------
+    bool pricesValid = false;
+    int priceCount = 0;
+    PricePoint prices[MAX_PRICES];  // Sorted by time
 
     // ---------- Claude plan usage (browser extension, see ClaudeUsage.h) ----------
     bool claudeValid = false;      // Numbers received at least once

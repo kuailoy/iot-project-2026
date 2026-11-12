@@ -7,20 +7,22 @@
 
 #include "../Components.h"
 #include "../../app/CalendarData.h"
+#include "../../app/ElectricityData.h"
 #include "../../app/DateUtil.h"
 
 using namespace Components;
 using namespace DateUtil;
 
 // ---------- Grid ----------
-// Like the Home page: header on top, footer at the bottom, and 4 x 2 cells
-// (192 x 153 px) between their lines. No frames: lines separate the widgets.
+// The whole screen is widgets: no header or footer, 4 x 3 cells (192 x 149 px).
+// No frames: lines separate the widgets, like on Home.
 
 constexpr int16_t PAD = 16;                              // Inside a widget
 constexpr int16_t GRID_X = MARGIN - PAD;                 // So text starts at the page margin
-constexpr int16_t GRID_TOP = HEADER_LINE_Y + 2;
+constexpr int16_t GRID_TOP = 16;
+constexpr int16_t GRID_BOTTOM = SCREEN_H - 16;
 constexpr int16_t CELL_W = (SCREEN_W - 2 * GRID_X) / WIDGET_COLS;
-constexpr int16_t CELL_H = (FOOTER_LINE_Y - GRID_TOP) / WIDGET_ROWS;
+constexpr int16_t CELL_H = (GRID_BOTTOM - GRID_TOP) / WIDGET_ROWS;
 constexpr int16_t CONTENT_INSET = 6;                     // Space above and below the content
 constexpr int16_t DIVIDER_INSET = 20;                    // Vertical lines stop short, as on Home
 constexpr int16_t LABEL_Y = 30;
@@ -421,14 +423,90 @@ static void drawClaude(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
     }
 }
 
+// ---------- Electricity spot price ----------
+
+static void drawPrice(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
+    using namespace ElectricityData;
+    char text[40];
+    drawLabel(gfx, b, "ELECTRICITY");
+
+    DayPrices today = data.timeValid ? dayPrices(data, DateUtil::dayOf(data.now)) : DayPrices();
+    const PricePoint* now = priceNow(data);
+    if (!today.any || now == nullptr) {
+        drawText(gfx, b.x + PAD, b.y + 80, "--", FONT_TEMP);
+        drawText(gfx, b.x + PAD, b.y + 110, data.pricesValid ? "No price now" : "Loading prices", FONT_SMALL);
+        return;
+    }
+
+    int hour = data.now.tm_hour;
+    int cheapest = cheapestHours(today, hour, 3);
+    char price[12];
+    formatCents(price, sizeof(price), now->cents);
+
+    // Price now, with the unit right after it
+    auto drawNow = [&](int16_t baseline) {
+        drawText(gfx, b.x + PAD, baseline, price, FONT_TEMP);
+        drawText(gfx, gfx.getCursorX() + 8, baseline, "c/kWh", FONT_SMALL);
+    };
+
+    if (b.w < 300) {
+        // Small: price and how it compares with today
+        drawNow(b.y + 82);
+        drawText(gfx, b.x + PAD, b.y + 114, levelText(now->cents, today.average), FONT_SMALL_BOLD);
+        return;
+    }
+
+    char window[16] = "";
+    if (cheapest >= 0) {
+        formatHours(window, sizeof(window), cheapest, 3);
+    }
+
+    if (b.h >= 200) {
+        // Large: price, level, chart with hours, cheapest window
+        formatCents(text, sizeof(text), today.average);
+        char avg[24];
+        snprintf(avg, sizeof(avg), "Avg %s", text);
+        drawTextRight(gfx, b.right() - PAD, b.y + LABEL_Y, avg, FONT_SMALL);
+        drawNow(b.y + 80);
+        drawText(gfx, b.x + PAD, b.y + 108, levelText(now->cents, today.average), FONT_SMALL_BOLD);
+        drawPriceChart(gfx, b.x + PAD, b.y + 126, b.w - 2 * PAD, 100, today.hourly, today.hasHour, hour, cheapest,
+                       cheapest >= 0 ? 3 : 0, true);
+        if (cheapest >= 0) {
+            snprintf(text, sizeof(text), "Cheapest %s", window);
+            drawText(gfx, b.x + PAD, b.y + 274, text, FONT_SMALL);
+        }
+        return;
+    }
+
+    if (b.w >= 600) {
+        // Wide: price on the left, today's chart on the right
+        if (cheapest >= 0) {
+            snprintf(text, sizeof(text), "Cheapest %s", window);
+            drawTextRight(gfx, b.right() - PAD, b.y + LABEL_Y, text, FONT_SMALL);
+        }
+        drawNow(b.y + 82);
+        drawText(gfx, b.x + PAD, b.y + 112, levelText(now->cents, today.average), FONT_SMALL_BOLD);
+        int16_t chartX = b.x + PAD + 250;
+        drawPriceChart(gfx, chartX, b.y + 44, b.right() - PAD - chartX, 66, today.hourly, today.hasHour, hour,
+                       cheapest, cheapest >= 0 ? 3 : 0, true);
+        return;
+    }
+
+    // Medium: price on the left, small chart on the right
+    drawNow(b.y + 82);
+    drawText(gfx, b.x + PAD, b.y + 112, levelText(now->cents, today.average), FONT_SMALL_BOLD);
+    int16_t chartX = b.x + PAD + 172;
+    drawPriceChart(gfx, chartX, b.y + 40, b.right() - PAD - chartX, 74, today.hourly, today.hasHour, hour, cheapest,
+                   cheapest >= 0 ? 3 : 0, false);
+}
+
 // ---------- Page ----------
 
 void WidgetPage::draw(Adafruit_GFX& gfx, const AppData& data) {
-    drawHeader(gfx, data);
-    drawFooter(gfx, "Press: menu      Hold: refresh      Touch: home");
-
+    // No header and footer: the screen is for the widgets (the controls are
+    // the same as on Home: press = menu, hold = refresh, touch = Home)
     if (data.widgetCount == 0) {
-        int16_t middle = (GRID_TOP + FOOTER_LINE_Y) / 2;
+        int16_t middle = SCREEN_H / 2;
         drawTextCentered(gfx, SCREEN_W / 2, middle - 6, "No widgets yet", FONT_BODY);
         drawTextCentered(gfx, SCREEN_W / 2, middle + 24, "Add them on your phone: Menu > Settings", FONT_SMALL);
         return;
@@ -467,6 +545,7 @@ void WidgetPage::draw(Adafruit_GFX& gfx, const AppData& data) {
             case WIDGET_NEXT_EVENT: drawNextEvent(gfx, b, data); break;
             case WIDGET_AGENDA: drawAgenda(gfx, b, data); break;
             case WIDGET_CLAUDE: drawClaude(gfx, b, data); break;
+            case WIDGET_PRICE: drawPrice(gfx, b, data); break;
             default: break;
         }
     }

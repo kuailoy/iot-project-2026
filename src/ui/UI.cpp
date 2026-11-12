@@ -33,6 +33,9 @@ void UI::onRotate(int steps) {
     } else if (currentPage == CALENDAR) {
         calendarPage.move(*data, steps);  // Next or previous day
         redrawNeeded = true;
+    } else if (currentPage == ELECTRICITY) {
+        electricityPage.toggleDay();  // Today <-> tomorrow
+        redrawNeeded = true;
     }
 }
 
@@ -65,6 +68,10 @@ void UI::onPress() {
         case MenuPage::CALENDAR:
             calendarPage.open();  // Today
             openPage(CALENDAR);
+            break;
+        case MenuPage::ELECTRICITY:
+            electricityPage.open();  // Today
+            openPage(ELECTRICITY);
             break;
         case MenuPage::SETTINGS:
             settingsOpened = true;  // main.cpp fills in the address and QR code
@@ -134,6 +141,9 @@ void UI::update() {
             break;
         case CALENDAR:
             calendarPage.draw(*display, *data);
+            break;
+        case ELECTRICITY:
+            electricityPage.draw(*display, *data);
             break;
         case SETUP:
             setupPage.draw(*display, *data);
@@ -217,6 +227,10 @@ void UI::showNextPage() {
             }
             break;
         case CALENDAR:
+            electricityPage.open();
+            openPage(ELECTRICITY);
+            break;
+        case ELECTRICITY:
             openPage(SLEEP);
             break;
         case SETUP:

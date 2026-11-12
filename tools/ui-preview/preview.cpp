@@ -2,13 +2,16 @@
 // Run build.sh, output goes to tools/ui-preview/out/
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 #include <Adafruit_GFX.h>
 
 #include "Components.h"
 #include "../app/DateUtil.h"
 #include "pages/CalendarPage.h"
+#include "pages/ElectricityPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
 #include "pages/SettingsPage.h"
@@ -52,13 +55,35 @@ static AppData demoData() {
     data.co2 = 640;
 
     // Claude plan usage like the claude.ai example: 54% session, 29% week
-    data.epoch = 1793714400;               // Mon 05 Oct-like test moment (UTC), only differences matter
+    // The same moment as data.now, in Finnish time (main() sets TZ)
+    struct tm local = data.now;
+    local.tm_isdst = -1;
+    data.epoch = mktime(&local);
     data.claudeValid = true;
     data.claudeSession = 54;
     data.claudeWeekly = 29;
     data.claudeSessionReset = data.epoch + 2 * 3600 + 20 * 60;
     data.claudeWeeklyReset = data.epoch + 2 * 86400 + 6 * 3600;
     data.claudeUpdated = data.epoch - 3 * 60;
+
+    // Electricity: hourly prices of a real day (c/kWh with VAT), each hour as
+    // four quarter-hours; tomorrow a bit cheaper
+    static const float HOURLY[24] = {2.27f, 1.18f, 1.21f, 1.25f, 1.12f, 1.19f, 1.73f, 1.95f,
+                                     2.39f, 2.98f, 3.45f, 4.06f, 5.55f, 7.80f, 9.72f, 10.05f,
+                                     27.85f, 37.16f, 41.59f, 40.54f, 35.90f, 28.47f, 25.73f, 17.20f};
+    struct tm midnight = data.now;
+    midnight.tm_hour = midnight.tm_min = midnight.tm_sec = 0;
+    midnight.tm_isdst = -1;
+    time_t dayStart = mktime(&midnight);
+    for (int day = 0; day < 2; day++) {
+        for (int q = 0; q < 96; q++) {
+            PricePoint& p = data.prices[data.priceCount++];
+            p.start = dayStart + day * 86400 + q * 900;
+            float wobble = (q % 4 == 1 ? 0.4f : q % 4 == 3 ? -0.3f : 0.0f);
+            p.cents = HOURLY[q / 4] * (day == 0 ? 1.0f : 0.7f) + wobble;
+        }
+    }
+    data.pricesValid = true;
 
     // Calendar events from the Figma designs
     struct Sample {
@@ -102,6 +127,9 @@ static AppData demoData() {
 }
 
 int main() {
+    setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4", 1);  // Finnish time, like the device
+    tzset();
+
     GFXcanvas1 canvas(SCREEN_W, SCREEN_H);
     AppData data = demoData();
 
@@ -197,20 +225,42 @@ int main() {
     savePbm(canvas, "out/home2.pbm");
 
     widgetData.widgetCount =
-        layoutWidgets("agenda:L,weather:M,date:S,co2:S", widgetData.widgets, MAX_WIDGETS);
+        layoutWidgets("agenda:L,weather:M,date:S,co2:S,price:W", widgetData.widgets, MAX_WIDGETS);
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-all.pbm");
 
-    widgetData.widgetCount = layoutWidgets("indoor:W,next:M,weather:S,date:S", widgetData.widgets, MAX_WIDGETS);
+    widgetData.widgetCount = layoutWidgets("indoor:W,next:M,weather:S,date:S,clock:M,indoor:M", widgetData.widgets, MAX_WIDGETS);
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-wide.pbm");
 
-    widgetData.widgetCount = layoutWidgets("claude:L,claude:M,claude:S,clock:S", widgetData.widgets, MAX_WIDGETS);
+    widgetData.widgetCount = layoutWidgets("claude:L,claude:M,claude:S,clock:S,price:M,indoor:S,co2:S", widgetData.widgets, MAX_WIDGETS);
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-claude.pbm");
+
+    // Electricity page: today (at 10:35) and tomorrow
+    AppData priceData = calendarData;
+    ElectricityPage electricity;
+    electricity.open();
+    canvas.fillScreen(COLOR_BG);
+    electricity.draw(canvas, priceData);
+    savePbm(canvas, "out/electricity.pbm");
+    electricity.toggleDay();
+    canvas.fillScreen(COLOR_BG);
+    electricity.draw(canvas, priceData);
+    savePbm(canvas, "out/electricity-tomorrow.pbm");
+
+    // Electricity widget in every size; and the menu with the price
+    widgetData.widgetCount = layoutWidgets("price:L,price:M,price:S,date:S,clock:W", widgetData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData);
+    savePbm(canvas, "out/home2-price.pbm");
+    widgetData.widgetCount = layoutWidgets("price:W,claude:M,co2:S,date:S,next:M,clock:M", widgetData.widgets, MAX_WIDGETS);
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData);
+    savePbm(canvas, "out/home2-price-wide.pbm");
 
     // Old numbers and no numbers yet
     widgetData.claudeUpdated = widgetData.epoch - 95 * 60;

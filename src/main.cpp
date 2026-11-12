@@ -28,6 +28,7 @@
 #include "app/AppData.h"
 #include "services/WeatherService.h"
 #include "services/CalendarService.h"
+#include "services/ElectricityService.h"
 #include "app/DateUtil.h"
 #include "app/Settings.h"
 #include "services/SetupPortal.h"
@@ -101,8 +102,11 @@ void updateDisplay();
 void handleInput();
 void updateWeather(bool force);
 void updateCalendar(bool force);
+void updatePrices(bool force);
 void showPagesInTurn();
 void connectWiFi(bool wait);
+void keepWiFi();
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
 void startSetup();
 void updateSetup();
 void applyWidgets();
@@ -144,12 +148,14 @@ void loop() {
     handleInput();
 #endif
     updateSetup();
+    keepWiFi();
     updateTime();
     readSensor();
     bool refresh = ui.takeRefreshRequest() || downloadNow;
     downloadNow = false;
     updateWeather(refresh);
     updateCalendar(refresh);
+    updatePrices(refresh);
     updateDisplay();
 
     delay(10);
@@ -222,6 +228,7 @@ void initWiFi() {
         startSetup();
         return;
     }
+    WiFi.onEvent(onWiFiEvent);
     connectWiFi(true);
 }
 
@@ -244,6 +251,42 @@ void connectWiFi(bool wait) {
 
     appData.wifiConnected = (WiFi.status() == WL_CONNECTED);
     Serial.println(appData.wifiConnected ? " connected" : " failed");
+}
+
+// Log why the Wi-Fi was lost or could not connect (once per new reason).
+// Common reasons: 201 network not found, 15 / 204 wrong password,
+// 200 / 8 the network went away. Runs in the Wi-Fi task.
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+    static int lastReason = -1;
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        int reason = info.wifi_sta_disconnected.reason;
+        if (reason != lastReason) {
+            Serial.printf("Wi-Fi: not connected, reason %d\n", reason);
+            lastReason = reason;
+        }
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+        Serial.printf("Wi-Fi: connected, IP %s\n", IPAddress(info.got_ip.ip_info.ip.addr).toString().c_str());
+        lastReason = -1;
+    }
+}
+
+// The ESP32 gives up after some errors (e.g. the network was not found),
+// so if the home Wi-Fi is lost, try again every 30 s. Not during setup or
+// while the settings page moves the device to another network.
+void keepWiFi() {
+    static unsigned long lastTry = 0;
+    const unsigned long RETRY_MS = 30000;
+    if (WiFi.status() == WL_CONNECTED || !settings.hasWifi() || portal.active() || portal.switchingWifi()) {
+        lastTry = millis();  // The first try comes 30 s after the Wi-Fi is lost
+        return;
+    }
+    if (millis() - lastTry < RETRY_MS) {
+        return;
+    }
+    lastTry = millis();
+    Serial.printf("Wi-Fi: trying %s again\n", settings.wifiSsid.c_str());
+    WiFi.disconnect();
+    WiFi.begin(settings.wifiSsid.c_str(), settings.wifiPassword.c_str());
 }
 
 // Turn on the setup Wi-Fi and show the setup page with its QR code
@@ -669,6 +712,79 @@ void updateCalendar(bool force) {
     appData.calendarValid = true;
 
     if (changed || force) {
+        ui.requestRedraw();
+    }
+}
+
+// ---------- Electricity spot price (api.spot-hinta.fi) ----------
+
+// Do we have prices for this local day?
+static bool havePricesFor(int32_t day) {
+    for (int i = 0; i < appData.priceCount; i++) {
+        if (DateUtil::localDay(appData.prices[i].start) == day) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Prices are fixed once published, so ask rarely: when today's are missing,
+// every 30 min in the afternoon until tomorrow's are out, otherwise every 6 h.
+// The API allows at most one request a minute.
+void updatePrices(bool force) {
+    static unsigned long lastAttempt = 0;
+    static bool everAttempted = false;
+    const unsigned long MINUTE = 60 * 1000UL;
+
+    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active()) {
+        return;
+    }
+    if (!force && ui.inUse()) {
+        return;  // Downloads block for a moment
+    }
+
+    int32_t today = DateUtil::dayOf(appData.now);
+    unsigned long interval;
+    if (!appData.pricesValid || !havePricesFor(today)) {
+        interval = 5 * MINUTE;
+    } else if (appData.now.tm_hour >= 14 && !havePricesFor(today + 1)) {
+        interval = 30 * MINUTE;  // Tomorrow's prices come out in the afternoon
+    } else {
+        interval = 6 * 60 * MINUTE;
+    }
+    if (everAttempted) {
+        unsigned long since = millis() - lastAttempt;
+        if (since < 2 * MINUTE || (!force && since < interval)) {
+            return;  // Never more often than every 2 minutes, even on "refresh"
+        }
+    }
+    lastAttempt = millis();
+    everAttempted = true;
+
+    std::unique_ptr<PricePoint[]> prices(new (std::nothrow) PricePoint[MAX_PRICES]);
+    if (!prices) {
+        Serial.println("Prices: not enough RAM");
+        return;
+    }
+    String error;
+    int count = fetchPrices(prices.get(), MAX_PRICES, error);
+    if (count < 0) {
+        Serial.printf("Price request failed: %s\n", error.c_str());
+        return;
+    }
+
+    bool changed = !appData.pricesValid || count != appData.priceCount;
+    for (int i = 0; i < count && !changed; i++) {
+        changed = prices[i].start != appData.prices[i].start || prices[i].cents != appData.prices[i].cents;
+    }
+    for (int i = 0; i < count; i++) {
+        appData.prices[i] = prices[i];
+    }
+    appData.priceCount = count;
+    appData.pricesValid = true;
+    Serial.printf("Prices: %d quarter-hours, tomorrow %s\n", count, havePricesFor(today + 1) ? "yes" : "not yet");
+
+    if (changed) {
         ui.requestRedraw();
     }
 }

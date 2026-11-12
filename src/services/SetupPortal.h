@@ -46,6 +46,8 @@ public:
     // Call once connected; does nothing while the setup Wi-Fi is on.
     void startLan(Settings& settings);
     bool lanRunning() const { return lanOn; }
+    // True while it moves the device to another Wi-Fi (from the settings page)
+    bool switchingWifi() const { return switchState == Switch::PENDING || switchState == Switch::SWITCHING; }
 
     // OpenWeatherMap key for the city search
     void setWeatherKey(const char* key) { weatherKey = key; }
