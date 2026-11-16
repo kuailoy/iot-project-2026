@@ -32,10 +32,13 @@
 #include "app/AppData.h"
 #include "services/CalendarService.h"
 #include "services/WeatherService.h"
+#include "services/WeatherParser.h"
 #include "services/ElectricityService.h"
 #include "services/GitHubService.h"
 #include "app/DateUtil.h"
+#include "app/FetchSchedule.h"
 #include "app/MusicData.h"
+#include "app/PressGesture.h"
 #include "app/Settings.h"
 #include "services/SetupPortal.h"
 #include "ui/UI.h"
@@ -53,14 +56,9 @@
 const char* NTP_SERVER = "pool.ntp.org";
 const char* TIME_ZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";  // Finland, with summer time
 
-// The weather city is chosen on the settings page (desk.local)
+// The weather city is chosen on the settings page (desk.local).
+// How often weather, calendar, prices and GitHub are downloaded: app/FetchSchedule.h
 
-const unsigned long WEATHER_INTERVAL_MS = 15 * 60 * 1000UL;
-const unsigned long WEATHER_RETRY_MS = 60 * 1000UL;
-const unsigned long CALENDAR_INTERVAL_MS = 30 * 60 * 1000UL;
-const unsigned long CALENDAR_RETRY_MS = 2 * 60 * 1000UL;
-const unsigned long GITHUB_INTERVAL_MS = 30 * 60 * 1000UL;
-const unsigned long GITHUB_RETRY_MS = 5 * 60 * 1000UL;
 const unsigned long SENSOR_INTERVAL_MS = 30 * 1000UL;
 const unsigned long LONG_PRESS_MS = 800;
 const unsigned long POWER_HOLD_MS = 3000;  // Touch button held this long on a home page: turn off
@@ -579,30 +577,23 @@ void handleInput() {
 
     // Touch button: a tap fires on release, a hold of POWER_HOLD_MS fires once
     // while still held. The interrupt catches taps that start and end while
-    // the loop is busy; those count as taps.
-    static bool touching = false;
-    static bool holdSent = false;
-    static unsigned long touchStart = 0;
+    // the loop is busy: the pin is LOW again by now, so they count as taps.
+    static PressGesture touch(POWER_HOLD_MS);
 
     if (touchPending) {
         touchPending = false;
         touchSeen = true;
-        if (!touching) {
-            touching = true;
-            holdSent = false;
-            touchStart = millis();
+        if (!touch.isDown()) {
+            touch.update(true, millis());
             ui.onTouchDown();
         }
     }
-    if (touching) {
+    if (touch.isDown()) {
         lastInput = millis();
-        if (digitalRead(TOUCH_PIN) == LOW) {
-            touching = false;
-            if (!holdSent) {
-                ui.onTouch();
-            }
-        } else if (!holdSent && millis() - touchStart >= POWER_HOLD_MS) {
-            holdSent = true;
+        PressGesture::Event event = touch.update(digitalRead(TOUCH_PIN) == HIGH, millis());
+        if (event == PressGesture::TAP) {
+            ui.onTouch();
+        } else if (event == PressGesture::HOLD) {
             ui.onTouchHold();
         }
     }
@@ -624,34 +615,23 @@ void handleInput() {
     }
 
     // Short press fires on release, long press fires once while still held
-    static bool wasPressed = false;
-    static bool longPressSent = false;
-    static unsigned long pressStart = 0;
+    static PressGesture knob(LONG_PRESS_MS);
 
     bool pressed = !rotary.digitalRead(ENCODER_BUTTON_PIN);  // Active low
-
     if (pressed) {
         lastInput = millis();
     }
-
-    if (pressed && !wasPressed) {
-        pressStart = millis();
-        longPressSent = false;
-    } else if (pressed && !longPressSent && millis() - pressStart >= LONG_PRESS_MS) {
-        longPressSent = true;
-        ui.onLongPress();
-    } else if (!pressed && wasPressed && !longPressSent) {
+    PressGesture::Event event = knob.update(pressed, millis());
+    if (event == PressGesture::TAP) {
         ui.onPress();
+    } else if (event == PressGesture::HOLD) {
+        ui.onLongPress();
     }
-
-    wasPressed = pressed;
 }
 
-// GitHub contribution graph for the GitHub widget: every 30 min, as
-// contributions come slowly (the API allows 5000 requests an hour)
+// GitHub contribution graph for the GitHub widget
 void updateGitHub(bool force) {
-    static unsigned long lastAttempt = 0;
-    static bool everAttempted = false;
+    static FetchSchedule::Timer timer;
 
     if (WiFi.status() != WL_CONNECTED || portal.active() || settings.githubToken.length() == 0) {
         return;
@@ -659,12 +639,9 @@ void updateGitHub(bool force) {
     if (!force && ui.inUse()) {
         return;  // Downloads block for a moment
     }
-    unsigned long interval = appData.githubValid ? GITHUB_INTERVAL_MS : GITHUB_RETRY_MS;
-    if (!force && everAttempted && millis() - lastAttempt < interval) {
+    if (!timer.due(millis(), FetchSchedule::githubInterval(appData), force)) {
         return;
     }
-    lastAttempt = millis();
-    everAttempted = true;
 
     // Into a temporary copy, so a failed update keeps the old graph
     std::unique_ptr<GitHubContributions> fresh(new (std::nothrow) GitHubContributions());
@@ -755,8 +732,7 @@ void showPagesInTurn() {
 }
 
 void updateWeather(bool force) {
-    static unsigned long lastAttempt = 0;
-    static bool everAttempted = false;
+    static FetchSchedule::Timer timer;
 
     if (WiFi.status() != WL_CONNECTED || portal.active()) {
         return;
@@ -766,13 +742,9 @@ void updateWeather(bool force) {
     if (!force && ui.inUse()) {
         return;
     }
-
-    unsigned long interval = appData.weatherValid ? WEATHER_INTERVAL_MS : WEATHER_RETRY_MS;
-    if (!force && everAttempted && millis() - lastAttempt < interval) {
+    if (!timer.due(millis(), FetchSchedule::weatherInterval(appData), force)) {
         return;
     }
-    lastAttempt = millis();
-    everAttempted = true;
 
     String response;
     String requestError;
@@ -788,39 +760,16 @@ void updateWeather(bool force) {
         return;
     }
 
-    float temperature = doc["main"]["temp"] | NAN;
-    int code = doc["weather"][0]["id"] | 0;
-    const char* city = doc["name"] | "unknown";
-    if (!isfinite(temperature) || doc["weather"][0]["id"].isNull()) {
+    Weather weather;
+    if (!readWeather(doc.as<JsonObjectConst>(), weather)) {
         Serial.println("Weather JSON error: response is missing temperature or condition code");
         return;
     }
-    // For the big weather widgets. Optional: calm wind has no direction, and
-    // there is no sunrise or sunset during polar day or night.
-    float feelsLike = doc["main"]["feels_like"] | temperature;
-    float windSpeed = doc["wind"]["speed"] | 0.0f;
-    int windDeg = doc["wind"]["deg"] | -1;
-    time_t sunrise = doc["sys"]["sunrise"] | 0L;
-    time_t sunset = doc["sys"]["sunset"] | 0L;
-    Serial.printf("Weather: %s, %.1f C (feels %.1f), wind %.1f m/s from %d, code %d\n", city, temperature,
-                  feelsLike, windSpeed, windDeg, code);
+    Serial.printf("Weather: %s, %.1f C (feels %.1f), wind %.1f m/s from %d, code %d\n",
+                  doc["name"] | "unknown", weather.temperature, weather.feelsLike, weather.windSpeed,
+                  weather.windDeg, weather.code);
 
-    bool changed = !appData.weatherValid ||
-                   lroundf(temperature) != lroundf(appData.outdoorTemp) ||
-                   code != appData.weatherCode ||
-                   lroundf(feelsLike) != lroundf(appData.feelsLike) ||
-                   lroundf(windSpeed) != lroundf(appData.windSpeed) || windDeg != appData.windDeg ||
-                   sunrise / 60 != appData.sunrise / 60 || sunset / 60 != appData.sunset / 60;
-
-    appData.outdoorTemp = temperature;
-    appData.weatherCode = code;
-    appData.feelsLike = feelsLike;
-    appData.windSpeed = windSpeed;
-    appData.windDeg = windDeg;
-    appData.sunrise = sunrise;
-    appData.sunset = sunset;
-    appData.weatherValid = true;
-
+    bool changed = storeWeather(weather, appData);
     if (changed || force) {
         ui.requestRedraw();
     }
@@ -838,8 +787,7 @@ static bool sameEvents(const CalendarEvent* a, const CalendarEvent* b, int count
 }
 
 void updateCalendar(bool force) {
-    static unsigned long lastAttempt = 0;
-    static bool everAttempted = false;
+    static FetchSchedule::Timer timer;
     static bool warnedNoUrl = false;
 
     // Needs the date to know which days to load
@@ -860,12 +808,9 @@ void updateCalendar(bool force) {
     }
     warnedNoUrl = false;
 
-    unsigned long interval = appData.calendarValid ? CALENDAR_INTERVAL_MS : CALENDAR_RETRY_MS;
-    if (!force && everAttempted && millis() - lastAttempt < interval) {
+    if (!timer.due(millis(), FetchSchedule::calendarInterval(appData), force)) {
         return;
     }
-    lastAttempt = millis();
-    everAttempted = true;
 
     // From this week's Monday (the calendar page shows this week) to
     // 8 weeks ahead (for the next event on Home and in the menu)
@@ -910,23 +855,9 @@ void updateCalendar(bool force) {
 
 // ---------- Electricity spot price (api.spot-hinta.fi) ----------
 
-// Do we have prices for this local day?
-static bool havePricesFor(int32_t day) {
-    for (int i = 0; i < appData.priceCount; i++) {
-        if (DateUtil::localDay(appData.prices[i].start) == day) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Prices are fixed once published, so ask rarely: when today's are missing,
-// every 30 min in the afternoon until tomorrow's are out, otherwise every 6 h.
-// The API allows at most one request a minute.
+// When to ask (rarely, prices are fixed once published): FetchSchedule::pricesInterval
 void updatePrices(bool force) {
-    static unsigned long lastAttempt = 0;
-    static bool everAttempted = false;
-    const unsigned long MINUTE = 60 * 1000UL;
+    static FetchSchedule::Timer timer;
 
     if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active()) {
         return;
@@ -934,24 +865,9 @@ void updatePrices(bool force) {
     if (!force && ui.inUse()) {
         return;  // Downloads block for a moment
     }
-
-    int32_t today = DateUtil::dayOf(appData.now);
-    unsigned long interval;
-    if (!appData.pricesValid || !havePricesFor(today)) {
-        interval = 5 * MINUTE;
-    } else if (appData.now.tm_hour >= 14 && !havePricesFor(today + 1)) {
-        interval = 30 * MINUTE;  // Tomorrow's prices come out in the afternoon
-    } else {
-        interval = 6 * 60 * MINUTE;
+    if (!timer.due(millis(), FetchSchedule::pricesInterval(appData), force, FetchSchedule::PRICES_MIN_GAP_MS)) {
+        return;
     }
-    if (everAttempted) {
-        unsigned long since = millis() - lastAttempt;
-        if (since < 2 * MINUTE || (!force && since < interval)) {
-            return;  // Never more often than every 2 minutes, even on "refresh"
-        }
-    }
-    lastAttempt = millis();
-    everAttempted = true;
 
     std::unique_ptr<PricePoint[]> prices(new (std::nothrow) PricePoint[MAX_PRICES]);
     if (!prices) {
@@ -974,7 +890,9 @@ void updatePrices(bool force) {
     }
     appData.priceCount = count;
     appData.pricesValid = true;
-    Serial.printf("Prices: %d quarter-hours, tomorrow %s\n", count, havePricesFor(today + 1) ? "yes" : "not yet");
+    int32_t today = DateUtil::dayOf(appData.now);
+    Serial.printf("Prices: %d quarter-hours, tomorrow %s\n", count,
+                  ElectricityData::hasDay(appData, today + 1) ? "yes" : "not yet");
 
     if (changed) {
         ui.requestRedraw();

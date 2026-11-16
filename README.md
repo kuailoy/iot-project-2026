@@ -97,7 +97,7 @@ The touch button switches between the normal Home page and a second page made of
 **Turning off**: on either home page, hold the touch button for 3 seconds. The screen shows "Turned off" with the time,
 and once you lift your finger the device goes into deep sleep (Wi-Fi, CO2 sensor and screen off; E-Ink keeps the page without power).
 Touch the button again to turn it on: it starts up like after a reset, in 10 to 20 seconds.
-Code: `powerOff()` and the touch handling in `handleInput()` in `src/main.cpp`, `src/ui/pages/PowerOffPage.cpp`.
+Code: `powerOff()` and the touch handling in `handleInput()` in `src/main.cpp` (tap or hold: `src/app/PressGesture.h`), `src/ui/pages/PowerOffPage.cpp`.
 A tap now acts when the finger is lifted (so a hold isn't also a tap).
 Its layout is edited on the settings page (`http://desk.local` → Widgets).
 The editor works like a phone home screen: drag widgets to reorder them, tap one to change its size (Small 1×1, Medium 2×1, Large 2×2, Wide 4×1), move it or remove it, and add new ones.
@@ -157,7 +157,7 @@ Turn the knob for tomorrow: the prices for tomorrow come out in the afternoon (a
 Press opens the menu, hold goes back to Home. It can also be added as a widget (see above).
 
 The API allows only one request a minute per IP; too many give HTTP 429 and can block the IP for a while.
-So the device asks rarely (`updatePrices()` in `src/main.cpp`): every 6 hours, every 30 minutes after 14:00 until tomorrow's prices are there,
+So the device asks rarely (`pricesInterval()` in `src/app/FetchSchedule.h`): every 6 hours, every 30 minutes after 14:00 until tomorrow's prices are there,
 every 5 minutes while today's prices are missing, and never more often than every 2 minutes (also when you hold to refresh).
 Code: `src/services/ElectricityService.*` (download), `src/app/ElectricityData.h` (price now, daily stats, cheapest hours),
 `src/ui/pages/ElectricityPage.cpp` (page).

@@ -28,6 +28,16 @@ inline const PricePoint* priceNow(const AppData& data) {
     return data.pricesValid && data.epoch > 0 ? priceAt(data, data.epoch) : nullptr;
 }
 
+// Are there prices for this local day?
+inline bool hasDay(const AppData& data, int32_t day) {
+    for (int i = 0; i < data.priceCount; i++) {
+        if (DateUtil::localDay(data.prices[i].start) == day) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // One day of prices (local time)
 struct DayPrices {
     bool any = false;

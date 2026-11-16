@@ -96,6 +96,7 @@ bool normalizeWidgets(const char* text, char* out, size_t outSize) {
         int written = snprintf(out + length, outSize - length, "%s%s:%c", i > 0 ? "," : "",
                                CODES[entries[i].type], SIZE_CODES[entries[i].size]);
         if (written < 0 || length + size_t(written) >= outSize) {
+            out[length] = '\0';  // snprintf left part of the entry: only whole entries
             break;
         }
         length += size_t(written);
