@@ -3,6 +3,7 @@
 #include "../display/EinkDisplay.h"
 
 #include "pages/CalendarPage.h"
+#include "pages/DevicePage.h"
 #include "pages/ElectricityPage.h"
 #include "pages/HabitPage.h"
 #include "pages/HomePage.h"
@@ -41,6 +42,15 @@ public:
     // True once the "turned off" page is fully on the screen: main.cpp
     // can stop everything now, E-Ink keeps the image without power
     bool readyToPowerOff() const;
+
+    // Knob button state, call every loop from handleInput(): the reset page
+    // needs to know how long it is held ("Hold 3s: reset")
+    void setKnobDown(bool down);
+
+    // True once the "Restarting" page is fully on the screen: main.cpp
+    // restarts the device now, after erasing everything if resetRequested()
+    bool readyToRestart() const;
+    bool resetRequested() const { return resetting; }
 
     // Call from updateDisplay(), does nothing if no redraw is needed.
     // Starts the E-Ink update and returns; while the panel is busy, new input
@@ -87,7 +97,11 @@ private:
         POMODORO,
         SLEEP,
         OFF,       // "Turned off", input is ignored until the device is off
-        HABITS     // Habit tracker
+        HABITS,           // Habit tracker
+        DEVICE,           // Wi-Fi, battery, firmware, restart, reset
+        RESTART_CONFIRM,  // "Restart the device?"
+        RESET_CONFIRM,    // "Reset and unpair?"
+        RESTARTING        // Shown while it restarts, input is ignored
     };
 
     EinkDisplay* display = nullptr;
@@ -124,6 +138,22 @@ private:
     bool longPressHabits();
     void updateHabits();
     bool drawHabits();              // false: UI.cpp draws the page
+
+    // Device page, restart and reset (UIDevice.cpp)
+    DevicePage devicePage;
+    bool knobDown = false;
+    unsigned long knobDownSinceMs = 0;
+    unsigned long resetPageOpenedMs = 0;
+    int resetBoxesDrawn = 0;
+    bool restartPending = false;    // Restart once the "Restarting" page is shown
+    bool resetting = false;         // ... after erasing everything
+    bool restartingDrawn = false;
+    int resetBoxes() const;
+    bool rotateDevice(int steps);
+    bool pressDevice();
+    bool longPressDevice();
+    void updateDevice();
+    bool drawDevice();
 
     // Turning off (onTouchHold)
     bool powerOffRequested = false;

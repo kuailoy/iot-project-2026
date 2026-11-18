@@ -115,6 +115,11 @@ only the numbers to the display (`POST /claude`). Setup: `tools/desk-extension/R
 Turn: menu, Press: check off today (again: undo), Hold: next habit. The habits are fixed in `src/app/Habits.cpp`;
 the checked days are kept in flash (`HabitStore`), 64 days back. Code: `src/app/Habits.*`, `src/ui/pages/HabitPage.cpp`, `src/ui/UIHabits.cpp` (knob).
 
+**Device** page (menu → Device): Wi-Fi (opens Settings), battery, firmware version, **Restart** and **Reset and unpair**.
+Restart asks first (Turn: cancel, Press: restart). Reset needs the knob held for 3 s, then erases everything in flash
+(Wi-Fi, settings, habits) and starts with the Wi-Fi setup like a new device. Code: `src/ui/pages/DevicePage.cpp`,
+`src/ui/UIDevice.cpp` (knob), `src/app/DeviceReset.*`, `restartDevice()` in `src/main.cpp`.
+
 **Now playing widget** and the **Music** page (menu → Music): what YouTube Music plays in your browser, with a progress bar,
 sent by the same Chrome extension (`POST /music`). Setup: `tools/desk-extension/README.md`.
 Code: `src/services/NowPlaying.*` (message), `src/app/MusicData.h`, `src/ui/pages/MusicPage.cpp`, `drawMusic()` in `src/ui/pages/WidgetPage.cpp`.

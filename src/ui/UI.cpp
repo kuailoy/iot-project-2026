@@ -30,8 +30,8 @@ void UI::onRotate(int steps) {
     if (steps == 0 || currentPage == OFF || wakeUp()) {
         return;
     }
-    if (rotateHabits(steps)) {
-        return;  // Habit tracker (UIHabits.cpp)
+    if (rotateHabits(steps) || rotateDevice(steps)) {
+        return;  // Habit tracker (UIHabits.cpp), Device pages (UIDevice.cpp)
     }
 
     if (currentPage == MENU) {
@@ -55,8 +55,8 @@ void UI::onPress() {
     if (currentPage == OFF || wakeUp()) {
         return;
     }
-    if (pressHabits()) {
-        return;  // Habit tracker (UIHabits.cpp)
+    if (pressHabits() || pressDevice()) {
+        return;  // Habit tracker (UIHabits.cpp), Device pages (UIDevice.cpp)
     }
 
     if (currentPage == SETUP) {
@@ -110,6 +110,10 @@ void UI::onPress() {
         case MenuPage::HABITS:
             openPage(HABITS);
             break;
+        case MenuPage::DEVICE:
+            devicePage.select(DevicePage::WIFI);
+            openPage(DEVICE);
+            break;
         default:
             // TODO: Open the other mode pages when they are implemented
             break;
@@ -121,8 +125,8 @@ void UI::onLongPress() {
     if (currentPage == OFF || wakeUp()) {
         return;
     }
-    if (longPressHabits()) {
-        return;  // Habit tracker (UIHabits.cpp)
+    if (longPressHabits() || longPressDevice()) {
+        return;  // Habit tracker (UIHabits.cpp), Device pages (UIDevice.cpp)
     }
 
     if (currentPage == HOME || currentPage == WIDGETS) {
@@ -143,8 +147,8 @@ void UI::onTouch() {
         return;
     }
 
-    if (currentPage == SETUP) {
-        return;  // Setup stays until it is done or cancelled
+    if (currentPage == SETUP || currentPage == RESTARTING) {
+        return;  // Setup stays until it is done or cancelled; restarting can't be stopped
     }
 
     // Switch between the two home pages; from anywhere else, the widget page
@@ -252,6 +256,7 @@ void UI::update() {
 
     updatePomodoro();
     updateHabits();
+    updateDevice();
     if (currentPage == OFF && offPageDrawn) {
         redrawNeeded = false;  // Nothing on it changes (the time is fixed): no second refresh
     }
@@ -265,8 +270,8 @@ void UI::update() {
     display->clearBuffer();
     display->fillScreen(COLOR_BG);
 
-    // Habit tracker (also fills in the menu's Habits row)
-    if (drawHabits()) {
+    // Habit tracker (also fills in the menu's Habits row) and Device pages
+    if (drawHabits() || drawDevice()) {
         display->startRefresh(inUse());
         redrawNeeded = false;
         return;
@@ -309,7 +314,7 @@ void UI::update() {
             offPageDrawn = true;
             break;
         default:
-            break;  // Drawn by drawHabits()
+            break;  // Drawn by drawHabits() / drawDevice()
     }
 
     display->startRefresh(inUse());  // No deep clean while the controls are in use
@@ -323,7 +328,7 @@ bool UI::takeRefreshRequest() {
 }
 
 void UI::enterSleep() {
-    if (currentPage == SETUP || currentPage == OFF || pomodoro.isActive()) {
+    if (currentPage == SETUP || currentPage == OFF || currentPage == RESTARTING || pomodoro.isActive()) {
         return;  // Keep the QR code, the "turned off" page or the timer visible
     }
     if (currentPage != SLEEP) {
@@ -408,6 +413,19 @@ void UI::showNextPage() {
             openPage(HABITS);
             break;
         case HABITS:
+            devicePage.select(DevicePage::WIFI);
+            openPage(DEVICE);
+            break;
+        case DEVICE:
+            openPage(RESTART_CONFIRM);
+            break;
+        case RESTART_CONFIRM:
+            openPage(RESET_CONFIRM);
+            break;
+        case RESET_CONFIRM:
+            openPage(RESTARTING);  // Only shown: restartPending stays false, nothing restarts
+            break;
+        case RESTARTING:
             openPage(SLEEP);
             break;
         case SETUP:
@@ -436,4 +454,9 @@ void UI::openPage(Page page) {
     currentPage = page;
     redrawNeeded = true;
     offPageDrawn = false;
+    restartingDrawn = false;
+    if (page == RESET_CONFIRM) {
+        resetPageOpenedMs = millis();  // Only a hold that starts here counts
+        resetBoxesDrawn = 0;
+    }
 }

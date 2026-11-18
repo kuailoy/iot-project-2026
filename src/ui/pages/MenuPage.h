@@ -16,6 +16,7 @@ public:
         MUSIC,
         ELECTRICITY,
         SETTINGS,
+        DEVICE,      // Restart and reset (DevicePage)
         ITEM_COUNT
     };
 

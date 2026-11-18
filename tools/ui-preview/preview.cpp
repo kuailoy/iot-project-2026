@@ -16,6 +16,7 @@
 #include "../app/DateUtil.h"
 #include "../app/GitHubData.h"
 #include "pages/CalendarPage.h"
+#include "pages/DevicePage.h"
 #include "pages/HabitPage.h"
 #include "../app/Habits.h"
 #include "pages/ElectricityPage.h"
@@ -733,6 +734,69 @@ static void saveHabitPages(GFXcanvas1& canvas, const AppData& source) {
     savePbm(canvas, "out/menu-habits.pbm");
 }
 
+// ---------- Device page: restart and reset ----------
+
+static void checkDevice() {
+    int failedBefore = checksFailed;
+
+    DevicePage device;
+    check(device.selected() == DevicePage::WIFI, "Wi-Fi is chosen first");
+    device.move(1);
+    check(device.selected() == DevicePage::RESTART, "battery and firmware are skipped");
+    device.move(1);
+    device.move(1);
+    check(device.selected() == DevicePage::WIFI, "wraps around");
+    device.move(-1);
+    check(device.selected() == DevicePage::RESET, "turning back wraps too");
+
+    if (checksFailed == failedBefore) {
+        printf("Device checks passed\n");
+    }
+}
+
+static void saveDevicePages(GFXcanvas1& canvas, const AppData& source) {
+    static AppData data;  // Large because of the event list
+    data = source;
+    data.now.tm_min = 35;  // 10:35 like the designs
+    strcpy(data.wifiName, "HomeNet-2.4G");
+    data.wifiConnected = true;
+    data.batteryPercent = 98;
+    checkDevice();
+
+    MenuPage menu;
+    menu.select(MenuPage::DEVICE);
+    canvas.fillScreen(COLOR_BG);
+    menu.draw(canvas, data);
+    savePbm(canvas, "out/menu-device.pbm");
+
+    DevicePage device;
+    canvas.fillScreen(COLOR_BG);
+    device.draw(canvas, data);
+    savePbm(canvas, "out/device.pbm");
+    device.select(DevicePage::RESET);
+    canvas.fillScreen(COLOR_BG);
+    device.draw(canvas, data);
+    savePbm(canvas, "out/device-reset.pbm");
+
+    canvas.fillScreen(COLOR_BG);
+    RestartPages::drawRestartConfirm(canvas, data);
+    savePbm(canvas, "out/restart-confirm.pbm");
+
+    canvas.fillScreen(COLOR_BG);
+    RestartPages::drawResetConfirm(canvas, data, 0);
+    savePbm(canvas, "out/reset-confirm.pbm");
+    canvas.fillScreen(COLOR_BG);
+    RestartPages::drawResetConfirm(canvas, data, 2);
+    savePbm(canvas, "out/reset-confirm-held.pbm");
+
+    canvas.fillScreen(COLOR_BG);
+    RestartPages::drawRestarting(canvas, false);
+    savePbm(canvas, "out/restarting.pbm");
+    canvas.fillScreen(COLOR_BG);
+    RestartPages::drawRestarting(canvas, true);
+    savePbm(canvas, "out/resetting.pbm");
+}
+
 // ---------- Weather answer ----------
 
 static bool weatherFrom(const char* json, Weather& out) {
@@ -1252,6 +1316,7 @@ int main() {
     saveCalendarPages(canvas, data);
     saveMusicPages(canvas, data);
     saveHabitPages(canvas, data);
+    saveDevicePages(canvas, data);
 
     // 10:35, for the widget and electricity pages below
     AppData calendarData = data;

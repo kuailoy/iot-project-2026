@@ -10,7 +10,7 @@
 using namespace Components;
 
 static const char* const LABELS[MenuPage::ITEM_COUNT] = {
-    "Dashboard", "Pomodoro", "Calendar", "Habits", "Music", "Electricity", "Settings"
+    "Dashboard", "Pomodoro", "Calendar", "Habits", "Music", "Electricity", "Settings", "Device"
 };
 
 void MenuPage::setHabits(int done, int total, bool known) {
@@ -24,7 +24,7 @@ void MenuPage::setHabits(int done, int total, bool known) {
 void MenuPage::draw(Adafruit_GFX& gfx, const AppData& data) {
     // TODO: Replace placeholder values with real data from each mode
     static const char* const values[ITEM_COUNT] = {
-        "8C Kuopio", "Ready", "", "", "Nothing playing", "", ""
+        "8C Kuopio", "Ready", "", "", "Nothing playing", "", "", "Restart, reset"
     };
 
     // Calendar row: "Next 10:30" today, "Next Wed 07" later

@@ -41,6 +41,7 @@
 #include "app/PressGesture.h"
 #include "app/Settings.h"
 #include "services/SetupPortal.h"
+#include "app/DeviceReset.h"
 #include "ui/UI.h"
 #include "display/EinkDisplay.h"
 #include "display/EinkBenchmark.h"
@@ -111,6 +112,7 @@ void updateCalendar(bool force);
 void updatePrices(bool force);
 void updateGitHub(bool force);
 void powerOff();
+void restartDevice(bool eraseAll);
 void showPagesInTurn();
 void connectWiFi(bool wait);
 void keepWiFi();
@@ -173,6 +175,9 @@ void loop() {
 
     if (ui.readyToPowerOff()) {
         powerOff();  // Does not return: turning on again restarts from setup()
+    }
+    if (ui.readyToRestart()) {
+        restartDevice(ui.resetRequested());  // Does not return
     }
 
     delay(10);
@@ -618,6 +623,7 @@ void handleInput() {
     static PressGesture knob(LONG_PRESS_MS);
 
     bool pressed = !rotary.digitalRead(ENCODER_BUTTON_PIN);  // Active low
+    ui.setKnobDown(pressed);  // The reset page counts how long it is held
     if (pressed) {
         lastInput = millis();
     }
@@ -705,6 +711,18 @@ void powerOff() {
 
     Serial.flush();
     esp_deep_sleep_start();
+}
+
+// Restart from the Device page: the "Restarting" page is on the screen (E-Ink
+// keeps it). eraseAll: "Reset and unpair", the device starts like a new one.
+void restartDevice(bool eraseAll) {
+    Serial.println(eraseAll ? "Device: reset and restart" : "Device: restart");
+    display.sleep();
+    if (eraseAll) {
+        DeviceReset::eraseAll();
+    }
+    Serial.flush();
+    ESP.restart();
 }
 
 // Test mode: switch to the next page every DEMO_PAGE_MS, forever.
