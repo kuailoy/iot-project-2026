@@ -26,6 +26,10 @@ public:
     Item selected() const { return selectedItem; }
     void select(Item item) { selectedItem = item; }
 
+    // Habits row: "3 of 5 done" (set by the UI before drawing; known = date known)
+    void setHabits(int done, int total, bool known);
+
 private:
     Item selectedItem = DASHBOARD;
+    char habitsValue[20] = "--";
 };

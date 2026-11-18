@@ -16,6 +16,8 @@
 #include "../app/DateUtil.h"
 #include "../app/GitHubData.h"
 #include "pages/CalendarPage.h"
+#include "pages/HabitPage.h"
+#include "../app/Habits.h"
 #include "pages/ElectricityPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
@@ -639,6 +641,98 @@ static void saveMusicPages(GFXcanvas1& canvas, const AppData& source) {
     savePbm(canvas, "out/music-none.pbm");
 }
 
+// ---------- Habit tracker and Device pages ----------
+
+// One habit's days, oldest first, the last one is today: "1101111" ('1' = done)
+static void setHabitDays(Habits& habits, int habit, const char* days) {
+    int n = int(strlen(days));
+    for (int i = 0; i < n; i++) {
+        int daysAgo = n - 1 - i;
+        if (days[i] == '1') {
+            habits.history[habit] |= uint64_t(1) << daysAgo;
+        }
+    }
+}
+
+// Same as the Figma design (Monday 5 Oct, last 7 days T W T F S S M)
+static Habits demoHabits(int32_t today) {
+    Habits habits;
+    habits.rollTo(today);
+    setHabitDays(habits, 0, "0111111111111111");  // Drink water, 15 days in a row
+    setHabitDays(habits, 1, "1101111");           // Read 20 pages
+    setHabitDays(habits, 2, "01111110");          // Finnish practice, not yet today
+    setHabitDays(habits, 3, "0101100");           // Walk 30 min
+    setHabitDays(habits, 4, "1011011");           // No phone after 22:00
+    return habits;
+}
+
+static void checkHabits(int32_t today) {
+    int failedBefore = checksFailed;
+    Habits habits = demoHabits(today);
+
+    check(habits.doneToday() == 3, "3 of 5 done today, like the design");
+    check(habits.streak(0) == 15, "streak of 15 days");
+    check(habits.streak(1) == 4, "a missed day ends the streak");
+    check(habits.streak(2) == 6, "not done today yet: the streak up to yesterday still counts");
+    check(habits.streak(3) == 0 && habits.streak(4) == 2, "no streak; short streak");
+
+    habits.toggleToday(2);
+    check(habits.done(2, 0) && habits.streak(2) == 7 && habits.doneToday() == 4, "check off today");
+    habits.toggleToday(2);
+    check(!habits.done(2, 0) && habits.streak(2) == 6, "press again: undo");
+
+    check(!habits.rollTo(today) && !habits.rollTo(today - 3), "same day or clock back: nothing moves");
+    check(habits.rollTo(today + 1) && habits.done(0, 1) && !habits.done(0, 0) && habits.streak(0) == 15,
+          "next day: today's dots move to yesterday");
+    check(habits.rollTo(today + 3) && habits.streak(0) == 0, "two days missed: the streak is over");
+    habits.rollTo(today + 200);
+    check(habits.streak(1) == 0 && !habits.done(1, 63), "after a long time everything is old");
+
+    Habits fresh;
+    check(!fresh.known(), "the date is unknown before the clock is synced");
+    fresh.toggleToday(0);
+    check(fresh.doneToday() == 0, "no check-off without the date");
+
+    for (int i = 0; i < 70; i++) {
+        habits.rollTo(today + 300 + i);
+        habits.toggleToday(4);
+    }
+    check(habits.streak(4) == HABIT_HISTORY_DAYS, "the longest streak is the history length");
+
+    if (checksFailed == failedBefore) {
+        printf("Habit checks passed\n");
+    }
+}
+
+static void saveHabitPages(GFXcanvas1& canvas, const AppData& source) {
+    static AppData data;  // Large because of the event list
+    data = source;
+    data.now.tm_min = 35;  // 10:35 like the design
+
+    int32_t today = DateUtil::dayOf(data.now);
+    checkHabits(today);
+    Habits habits = demoHabits(today);
+
+    HabitPage habitPage;
+    habitPage.next();
+    habitPage.next();  // The arrow on "Finnish practice", like the design
+    canvas.fillScreen(COLOR_BG);
+    habitPage.draw(canvas, data, habits);
+    savePbm(canvas, "out/habits.pbm");
+
+    Habits unknown;
+    canvas.fillScreen(COLOR_BG);
+    habitPage.draw(canvas, data, unknown);
+    savePbm(canvas, "out/habits-no-clock.pbm");
+
+    MenuPage menu;
+    menu.select(MenuPage::HABITS);
+    menu.setHabits(habits.doneToday(), HABIT_COUNT, true);
+    canvas.fillScreen(COLOR_BG);
+    menu.draw(canvas, data);
+    savePbm(canvas, "out/menu-habits.pbm");
+}
+
 // ---------- Weather answer ----------
 
 static bool weatherFrom(const char* json, Weather& out) {
@@ -1157,6 +1251,7 @@ int main() {
     savePomodoroPages(canvas, data);
     saveCalendarPages(canvas, data);
     saveMusicPages(canvas, data);
+    saveHabitPages(canvas, data);
 
     // 10:35, for the widget and electricity pages below
     AppData calendarData = data;

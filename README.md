@@ -111,6 +111,10 @@ only the numbers to the display (`POST /claude`). Setup: `tools/desk-extension/R
 
 **Electricity widget**: the spot price now and whether it is cheap; bigger sizes add the day's chart and the cheapest 3 hours.
 
+**Habits** page (menu → Habits): five daily habits, the last 7 days as dots (today in a box) and each streak.
+Turn: menu, Press: check off today (again: undo), Hold: next habit. The habits are fixed in `src/app/Habits.cpp`;
+the checked days are kept in flash (`HabitStore`), 64 days back. Code: `src/app/Habits.*`, `src/ui/pages/HabitPage.cpp`, `src/ui/UIHabits.cpp` (knob).
+
 **Now playing widget** and the **Music** page (menu → Music): what YouTube Music plays in your browser, with a progress bar,
 sent by the same Chrome extension (`POST /music`). Setup: `tools/desk-extension/README.md`.
 Code: `src/services/NowPlaying.*` (message), `src/app/MusicData.h`, `src/ui/pages/MusicPage.cpp`, `drawMusic()` in `src/ui/pages/WidgetPage.cpp`.

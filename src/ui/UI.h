@@ -4,6 +4,7 @@
 
 #include "pages/CalendarPage.h"
 #include "pages/ElectricityPage.h"
+#include "pages/HabitPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
 #include "pages/MusicPage.h"
@@ -85,7 +86,8 @@ private:
         SETUP,
         POMODORO,
         SLEEP,
-        OFF        // "Turned off", input is ignored until the device is off
+        OFF,       // "Turned off", input is ignored until the device is off
+        HABITS     // Habit tracker
     };
 
     EinkDisplay* display = nullptr;
@@ -114,6 +116,14 @@ private:
     WidgetPage widgetPage;
     PomodoroPage pomodoroPage;
     PowerOffPage powerOffPage;
+    // Habit tracker (UIHabits.cpp). Each returns true if it handled the input.
+    HabitPage habitPage;
+    Habits habits;                  // Loaded from flash in begin()
+    bool rotateHabits(int steps);
+    bool pressHabits();
+    bool longPressHabits();
+    void updateHabits();
+    bool drawHabits();              // false: UI.cpp draws the page
 
     // Turning off (onTouchHold)
     bool powerOffRequested = false;

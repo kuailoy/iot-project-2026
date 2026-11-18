@@ -1,6 +1,7 @@
 #include "UI.h"
 
 #include "Components.h"
+#include "../app/HabitStore.h"
 
 #include <Arduino.h>
 
@@ -8,6 +9,7 @@ void UI::begin(EinkDisplay& epd, const AppData& appData) {
     display = &epd;
     data = &appData;
     redrawNeeded = true;
+    HabitStore::load(habits);
 }
 
 // ---------- Input ----------
@@ -27,6 +29,9 @@ void UI::onRotate(int steps) {
     }
     if (steps == 0 || currentPage == OFF || wakeUp()) {
         return;
+    }
+    if (rotateHabits(steps)) {
+        return;  // Habit tracker (UIHabits.cpp)
     }
 
     if (currentPage == MENU) {
@@ -49,6 +54,9 @@ void UI::onPress() {
     noteInput();
     if (currentPage == OFF || wakeUp()) {
         return;
+    }
+    if (pressHabits()) {
+        return;  // Habit tracker (UIHabits.cpp)
     }
 
     if (currentPage == SETUP) {
@@ -99,6 +107,9 @@ void UI::onPress() {
             settingsOpened = true;  // main.cpp fills in the address and QR code
             openPage(SETTINGS);
             break;
+        case MenuPage::HABITS:
+            openPage(HABITS);
+            break;
         default:
             // TODO: Open the other mode pages when they are implemented
             break;
@@ -109,6 +120,9 @@ void UI::onLongPress() {
     noteInput();
     if (currentPage == OFF || wakeUp()) {
         return;
+    }
+    if (longPressHabits()) {
+        return;  // Habit tracker (UIHabits.cpp)
     }
 
     if (currentPage == HOME || currentPage == WIDGETS) {
@@ -237,6 +251,7 @@ void UI::update() {
     }
 
     updatePomodoro();
+    updateHabits();
     if (currentPage == OFF && offPageDrawn) {
         redrawNeeded = false;  // Nothing on it changes (the time is fixed): no second refresh
     }
@@ -249,6 +264,13 @@ void UI::update() {
 
     display->clearBuffer();
     display->fillScreen(COLOR_BG);
+
+    // Habit tracker (also fills in the menu's Habits row)
+    if (drawHabits()) {
+        display->startRefresh(inUse());
+        redrawNeeded = false;
+        return;
+    }
 
     switch (currentPage) {
         case HOME:
@@ -286,6 +308,8 @@ void UI::update() {
             powerOffPage.draw(*display, offTimeKnown ? &offTime : nullptr);
             offPageDrawn = true;
             break;
+        default:
+            break;  // Drawn by drawHabits()
     }
 
     display->startRefresh(inUse());  // No deep clean while the controls are in use
@@ -381,6 +405,9 @@ void UI::showNextPage() {
             openPage(MUSIC);
             break;
         case MUSIC:
+            openPage(HABITS);
+            break;
+        case HABITS:
             openPage(SLEEP);
             break;
         case SETUP:

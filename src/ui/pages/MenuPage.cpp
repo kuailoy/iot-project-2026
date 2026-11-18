@@ -13,10 +13,18 @@ static const char* const LABELS[MenuPage::ITEM_COUNT] = {
     "Dashboard", "Pomodoro", "Calendar", "Habits", "Music", "Electricity", "Settings"
 };
 
+void MenuPage::setHabits(int done, int total, bool known) {
+    if (known) {
+        snprintf(habitsValue, sizeof(habitsValue), "%d of %d done", done, total);
+    } else {
+        snprintf(habitsValue, sizeof(habitsValue), "--");
+    }
+}
+
 void MenuPage::draw(Adafruit_GFX& gfx, const AppData& data) {
     // TODO: Replace placeholder values with real data from each mode
     static const char* const values[ITEM_COUNT] = {
-        "8C Kuopio", "Ready", "", "3 of 5 done", "Nothing playing", "", ""
+        "8C Kuopio", "Ready", "", "", "Nothing playing", "", ""
     };
 
     // Calendar row: "Next 10:30" today, "Next Wed 07" later
@@ -63,6 +71,7 @@ void MenuPage::draw(Adafruit_GFX& gfx, const AppData& data) {
         const char* value = i == CALENDAR    ? calendarValue
                           : i == ELECTRICITY ? priceValue
                           : i == MUSIC       ? musicValue
+                          : i == HABITS      ? habitsValue
                                              : values[i];
         drawMenuRow(gfx, y, rowHeight, LABELS[i], value, i == selectedItem, !isLast);
     }

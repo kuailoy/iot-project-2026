@@ -20,6 +20,7 @@ g++ -std=c++14 -O1 -DARDUINO=100 \
     "$ROOT/src/ui/Components.cpp" \
     "$ROOT/src/ui/WeatherIcons.cpp" \
     "$ROOT/src/app/Pomodoro.cpp" \
+    "$ROOT/src/app/Habits.cpp" \
     "$ROOT/src/services/IcsParser.cpp" \
     "$ROOT/src/services/GitHubParser.cpp" \
     "$ROOT/src/services/NowPlaying.cpp" \
