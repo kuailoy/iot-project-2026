@@ -6,9 +6,11 @@
 #include "pages/ElectricityPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/MusicPage.h"
 #include "pages/SettingsPage.h"
 #include "pages/SetupPage.h"
 #include "pages/PomodoroPage.h"
+#include "pages/PowerOffPage.h"
 #include "pages/SleepPage.h"
 #include "pages/WidgetPage.h"
 
@@ -25,17 +27,29 @@ public:
     void onPress();
     void onLongPress();
 
-    // Touch button: wakes up from sleep, otherwise switches between the
-    // two home pages (Home and the widget page)
+    // Touch button, call from handleInput().
+    // Tap (on release): wakes up from sleep, otherwise goes through the pages
+    // of the list on the phone in order (Home, Calendar, widget pages...) and
+    // back to the first.
     void onTouch();
+    // Held for a few seconds: on a page of the list, shows the "turned off"
+    // page and asks main.cpp to power off (see readyToPowerOff); elsewhere
+    // like a tap.
+    void onTouchHold();
+    // A touch has started: counts as input, so the deep clean waits (inUse)
+    void onTouchDown() { noteInput(); }
+
+    // True once the "turned off" page is fully on the screen: main.cpp
+    // can stop everything now, E-Ink keeps the image without power
+    bool readyToPowerOff() const;
 
     // Call from updateDisplay(), does nothing if no redraw is needed.
     // Starts the E-Ink update and returns; while the panel is busy, new input
     // is collected and the newest state is drawn when it is free again.
     void update();
 
-    // True if a control was used in the last INPUT_ACTIVE_MS; slow work
-    // (downloads, the deep-clean refresh) waits until then
+    // True if a control was used in the last INPUT_ACTIVE_MS; the deep-clean
+    // refresh (a few seconds of flashing) waits until then
     bool inUse() const;
 
     // Force a full redraw, e.g. after new sensor or weather data
@@ -52,9 +66,8 @@ public:
     bool takeSetupRestart();             // Hold on the setup page
     bool takeSetupCancel();              // Press on the setup page (only if Wi-Fi was set up before)
 
-    // Show the sleep screen, any input wakes up to Home (not during setup)
     // Show the sleep screen, any input wakes up to Home.
-    // Ignored while a Pomodoro timer is running.
+    // Ignored during setup, while turning off and while a Pomodoro timer is running.
     void enterSleep();
     bool isAsleep() const { return currentPage == SLEEP; }
 
@@ -65,20 +78,22 @@ public:
 private:
     enum Page {
         HOME,
-        WIDGETS,   // Second home page
+        WIDGETS,   // A widget page (widgetIndex)
         MENU,
         CALENDAR,
         ELECTRICITY,
+        MUSIC,
         SETTINGS,
         SETUP,
         POMODORO,
-        CALENDAR,
-        SLEEP
+        SLEEP,
+        OFF        // "Turned off", input is ignored until the device is off
     };
 
     EinkDisplay* display = nullptr;
     const AppData* data = nullptr;
     Page currentPage = HOME;
+    int widgetIndex = 0;           // Which widget page WIDGETS shows
     bool redrawNeeded = true;
     bool refreshRequested = false;
     bool setupRequested = false;
@@ -96,11 +111,18 @@ private:
     SleepPage sleepPage;
     CalendarPage calendarPage;
     ElectricityPage electricityPage;
+    MusicPage musicPage;
     SetupPage setupPage;
     SettingsPage settingsPage;
     WidgetPage widgetPage;
     PomodoroPage pomodoroPage;
-    CalendarPage calendarPage;
+    PowerOffPage powerOffPage;
+
+    // Turning off (onTouchHold)
+    bool powerOffRequested = false;
+    bool offPageDrawn = false;      // The refresh with the OFF page has started
+    bool offTimeKnown = false;
+    struct tm offTime = {};         // Shown on the page, fixed when turning off
 
     Pomodoro pomodoro;
     int pomodoroDrawnMinutes = -1;
@@ -118,4 +140,11 @@ private:
     bool wakeUp();
 
     void openPage(Page page);
+    void openWidgets(int index);  // A widget page; past the last one: the first page
+    // The first page of the list (Home, unless it was removed on the phone).
+    // Every "back home" (wake up, hold to go back, menu > Dashboard) opens it.
+    void openStart();
+    void openListPage(int position);  // A page of the list, 0 = the first
+    int listPosition() const;          // Of the page shown, -1 if it isn't in the list
+    int widgetPages() const { return data->widgetPageCount; }
 };

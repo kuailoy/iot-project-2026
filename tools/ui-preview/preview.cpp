@@ -1,24 +1,43 @@
 // Renders UI pages to PBM images on a PC, no hardware needed.
 // Run build.sh, output goes to tools/ui-preview/out/
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <memory>
+#include <string>
 
 #include <Adafruit_GFX.h>
 
 #include "Components.h"
+#include "../app/CalendarData.h"
 #include "../app/DateUtil.h"
+#include "../app/GitHubData.h"
 #include "pages/CalendarPage.h"
 #include "pages/ElectricityPage.h"
 #include "pages/HomePage.h"
 #include "pages/MenuPage.h"
+#include "pages/PomodoroPage.h"
+#include "pages/PowerOffPage.h"
 #include "pages/SettingsPage.h"
 #include "pages/SetupPage.h"
 #include "pages/WidgetPage.h"
+#include "WeatherIcons.h"
 #include "pages/SleepPage.h"
-#include "../../src/services/IcalParser.h"
+#include "../../src/services/GitHubParser.h"
+#include "../../src/services/NowPlaying.h"
+#include "../app/PlainText.h"
+#include "../app/MusicData.h"
+#include "pages/MusicPage.h"
+#include "../../src/services/IcsParser.h"
+#include "../../src/services/WeatherParser.h"
+#include "../app/FetchSchedule.h"
+#include "../app/PressGesture.h"
+#include "../app/HomePages.h"
+#include "../app/ElectricityData.h"
+#include "../../src/services/ClaudeUsage.h"
 
 static bool savePbm(GFXcanvas1& canvas, const char* path) {
     FILE* file = fopen(path, "wb");
@@ -34,6 +53,11 @@ static bool savePbm(GFXcanvas1& canvas, const char* path) {
     return true;
 }
 
+// All widget pages from a layout text, like main.cpp's applyWidgets()
+static void setWidgets(AppData& data, const char* layout) {
+    HomePages::place(data, layout);
+}
+
 // Same values as the Figma design
 static AppData demoData() {
     AppData data;
@@ -46,10 +70,12 @@ static AppData demoData() {
     data.now.tm_mon = 9;   // October (0 = January)
     data.now.tm_wday = 1;  // Monday
     data.now.tm_yday = 277;
-    data.now.tm_year = 126;  // 2026
 
     data.weatherValid = true;
     data.outdoorTemp = 8;
+    data.feelsLike = 5.4f;
+    data.windSpeed = 4.2f;
+    data.windDeg = 225;  // From the south-west
 
     data.sensorValid = true;
     data.indoorTemp = 22;
@@ -86,6 +112,10 @@ static AppData demoData() {
         }
     }
     data.pricesValid = true;
+
+    // Kuopio on 5 Oct: sunrise 07:35, sunset 18:41
+    data.sunrise = dayStart + 7 * 3600 + 35 * 60;
+    data.sunset = dayStart + 18 * 3600 + 41 * 60;
 
     // Calendar events from the Figma designs
     struct Sample {
@@ -133,11 +163,11 @@ static AppData demoData() {
 static const uint32_t MINUTE_MS = 60000UL;
 static const int32_t START_CLOCK = 10 * 3600 + 23 * 60;  // First session starts 10:23
 
-static int checksFailed = 0;
+static int checksFailed = 0;  // All checks, main() fails if any did
 
 static void check(bool ok, const char* what) {
     if (!ok) {
-        printf("Pomodoro check FAILED: %s\n", what);
+        printf("Check FAILED: %s\n", what);
         checksFailed++;
     }
 }
@@ -171,6 +201,7 @@ static void drawPomodoro(GFXcanvas1& canvas, const AppData& data, const Pomodoro
 
 // Every timer state, also checks the timer logic on the way
 static void savePomodoroPages(GFXcanvas1& canvas, const AppData& data) {
+    int failedBefore = checksFailed;
     Pomodoro ready;
     drawPomodoro(canvas, data, ready, 0, "out/pomodoro-1-ready.pbm");
     ready.adjustFocus(1);
@@ -222,7 +253,15 @@ static void savePomodoroPages(GFXcanvas1& canvas, const AppData& data) {
     check(cycle.cycleFocusMinutes() == 100, "4 x 25 = 100 min");
     drawPomodoro(canvas, data, cycle, t, "out/pomodoro-6-cycle-done.pbm");
 
-    if (checksFailed == 0) {
+    // Pause pressed just after the focus ended (during a slow refresh): the
+    // alert shows, not a paused timer at 0 min that can't be stopped
+    Pomodoro late;
+    late.start(0, clockAt(0));
+    t = late.focusMinutes() * MINUTE_MS + 2000;
+    late.pause(t, clockAt(t));
+    check(late.state() == Pomodoro::FOCUS_DONE, "pause after the end shows the break alert");
+
+    if (checksFailed == failedBefore) {
         printf("Pomodoro checks passed\n");
     }
 }
@@ -261,31 +300,106 @@ static const char* const DEMO_ICS =
     "BEGIN:VEVENT\r\nSUMMARY:Too late\r\nDTSTART:20270301T100000\r\nEND:VEVENT\r\n"
     "END:VCALENDAR";
 
-static void loadDemoCalendar(AppData& data) {
-    int32_t today = CalendarDate::fromTm(data.now);
-    IcalParser parser(data.calendar, today - 7, today + CalendarData::DAYS_AHEAD);
-
-    // Feed in small pieces like the network does
-    size_t length = strlen(DEMO_ICS);
-    for (size_t i = 0; i < length; i += 7) {
-        parser.feed(DEMO_ICS + i, length - i < 7 ? length - i : 7);
+// Feeds an iCal file to the parser in small pieces like the network does.
+// Returns the number of events, -1 if there was not enough memory.
+static int parseIcs(const char* ics, int32_t firstDay, int32_t lastDay, CalendarEvent* events, int capacity,
+                    int32_t& completeUntil) {
+    std::unique_ptr<IcsParser> parser(IcsParser::create(firstDay, lastDay, events, capacity));
+    if (!parser) {
+        return -1;
     }
-    parser.finish();
-    data.calendar.valid = true;
+    size_t length = strlen(ics);
+    for (size_t i = 0; i < length; i += 7) {
+        parser->feed((const uint8_t*)ics + i, length - i < 7 ? length - i : 7);
+    }
+    parser->finish();
+    check(parser->sawCalendar(), "the file is a calendar");
+    completeUntil = parser->completeUntil();
+    return parser->count();
+}
 
-    const CalendarData& calendar = data.calendar;
-    check(parser.eventsSeen() == 18, "parser sees every event");
-    check(calendar.count == 16, "cancelled and far away events are skipped");
-    check(calendar.countOn(today) == 5, "five events today");
-    check(strcmp(calendar.events[0].title, "Finnish class") == 0, "title is cut before brackets");
-    check(calendar.events[1].startMinute == 10 * 60 + 30, "events are sorted by time");
-    check(strcmp(calendar.events[1].title, "Project meeting") == 0, "folded line, alarm ignored");
-    int sync = calendar.firstOn(today + 2) + 1;
-    check(strcmp(calendar.events[sync].title, "Sync, weekly") == 0, "escaped comma");
-    int holiday = calendar.firstOn(today + 9);
-    check(holiday >= 0 && calendar.events[holiday].allDay, "all-day event");
-    check(CalendarDate::isoWeek(today) == 41, "5 Oct 2026 is in week 41");
-    check(CalendarDate::weekdayOf(today) == 0, "5 Oct 2026 is a Monday");
+// "20261005", for the generated test feeds
+static std::string icsDate(int32_t day) {
+    int year, month, dayOfMonth;
+    DateUtil::civilFromDays(day, year, month, dayOfMonth);
+    char text[12];
+    snprintf(text, sizeof(text), "%04d%02d%02d", year, month, dayOfMonth);
+    return text;
+}
+
+// Loads DEMO_ICS for the same days as updateCalendar() in main.cpp
+static void loadDemoCalendar(AppData& data) {
+    int32_t today = DateUtil::dayOf(data.now);
+    int32_t firstDay = today - DateUtil::weekday(today);
+    int32_t lastDay = today + CALENDAR_DAYS_AHEAD;
+    int32_t completeUntil = 0;
+    data.eventCount = parseIcs(DEMO_ICS, firstDay, lastDay, data.events, MAX_CALENDAR_EVENTS, completeUntil);
+    data.calendarValid = true;
+    data.calendarFirstDay = firstDay;
+    data.calendarLastDay = completeUntil;
+
+    int first;
+    check(data.eventCount == 16, "cancelled and far away events are skipped");
+    check(completeUntil == lastDay, "nothing left out of the demo feed");
+    check(CalendarData::eventsOnDay(data, today, &first) == 5, "five events today");
+    check(strcmp(data.events[0].title, "Finnish class") == 0, "title is cut before brackets");
+    check(data.events[1].startMin == 10 * 60 + 30, "events are sorted by time");
+    check(strcmp(data.events[1].title, "Project meeting") == 0, "folded line, alarm ignored");
+    CalendarData::eventsOnDay(data, today + 2, &first);
+    check(first >= 0 && strcmp(data.events[first + 1].title, "Sync, weekly") == 0, "escaped comma");
+    CalendarData::eventsOnDay(data, today + 9, &first);
+    check(first >= 0 && data.events[first].allDay, "all-day event");
+    check(DateUtil::isoWeek(today) == 41, "5 Oct 2026 is in week 41");
+    check(DateUtil::weekday(today) == 0, "5 Oct 2026 is a Monday");
+}
+
+// More recurring events or changes than the parser can keep: the days they
+// touch must be unknown, not shown as free
+static void checkParserLimits(int32_t today) {
+    static CalendarEvent events[MAX_CALENDAR_EVENTS];
+    int32_t lastDay = today + CALENDAR_DAYS_AHEAD;
+    int32_t completeUntil = 0;
+    char text[160];
+
+    // One weekly series more than fits; the extra one starts next Monday
+    std::string ics = "BEGIN:VCALENDAR\r\n";
+    for (int i = 0; i <= IcsParser::MAX_RECURRING; i++) {
+        int32_t start = i < IcsParser::MAX_RECURRING ? today : today + 7;
+        snprintf(text, sizeof(text),
+                 "BEGIN:VEVENT\r\nUID:series-%d\r\nSUMMARY:Series %d\r\nDTSTART:%sT%02d0000\r\n"
+                 "RRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n",
+                 i, i, icsDate(start).c_str(), 8 + i % 10);
+        ics += text;
+    }
+    ics += "END:VCALENDAR\r\n";
+    int count = parseIcs(ics.c_str(), today, lastDay, events, MAX_CALENDAR_EVENTS, completeUntil);
+    check(count == 2 * IcsParser::MAX_RECURRING, "every series that fits is expanded");
+    check(completeUntil == today + 6, "a left-out series makes its days unknown");
+
+    // Two daily series, with one cancelled occurrence more than fits
+    const int perSeries = IcsParser::MAX_OVERRIDES / 2 + 1;  // 33 + 32 = MAX_OVERRIDES + 1
+    ics = "BEGIN:VCALENDAR\r\n";
+    for (int s = 0; s < 2; s++) {
+        snprintf(text, sizeof(text),
+                 "BEGIN:VEVENT\r\nUID:daily-%d\r\nSUMMARY:Daily %d\r\nDTSTART:%sT090000\r\n"
+                 "RRULE:FREQ=DAILY;COUNT=40\r\nEND:VEVENT\r\n",
+                 s, s, icsDate(today).c_str());
+        ics += text;
+    }
+    for (int s = 0; s < 2; s++) {
+        for (int d = 0; d < perSeries - s; d++) {
+            snprintf(text, sizeof(text),
+                     "BEGIN:VEVENT\r\nUID:daily-%d\r\nRECURRENCE-ID:%sT090000\r\nSTATUS:CANCELLED\r\n"
+                     "DTSTART:%sT090000\r\nEND:VEVENT\r\n",
+                     s, icsDate(today + d).c_str(), icsDate(today + d).c_str());
+            ics += text;
+        }
+    }
+    ics += "END:VCALENDAR\r\n";
+    count = parseIcs(ics.c_str(), today, lastDay, events, MAX_CALENDAR_EVENTS, completeUntil);
+    // The change left out is the last one: series 1 on day perSeries - 2
+    check(count > 0 && events[0].day > today, "cancelled occurrences are hidden");
+    check(completeUntil == today + (perSeries - 2) - 1, "a left-out change makes its day unknown");
 }
 
 static void drawCalendar(GFXcanvas1& canvas, const AppData& data, CalendarPage& page,
@@ -298,39 +412,837 @@ static void drawCalendar(GFXcanvas1& canvas, const AppData& data, CalendarPage& 
 static void saveCalendarPages(GFXcanvas1& canvas, const AppData& source) {
     static AppData data;  // Large because of the event list
     data = source;
-    checksFailed = 0;
+    int failedBefore = checksFailed;
     loadDemoCalendar(data);
+    int32_t today = DateUtil::dayOf(data.now);
+    checkParserLimits(today);
 
     CalendarPage page;
+    page.open();
     drawCalendar(canvas, data, page, "out/calendar-1-month.pbm");
 
-    page.next();  // Tomorrow has no events
+    page.move(data, 1);  // Tomorrow has no events
     drawCalendar(canvas, data, page, "out/calendar-2-free-day.pbm");
 
-    page.showToday();
+    page.open();
     page.toggleView();
     drawCalendar(canvas, data, page, "out/calendar-3-week.pbm");
 
-    // 30 Nov 2026: November needs six rows of weeks
-    page.toggleView();
-    for (int i = 0; i < CalendarPage::MAX_DAYS_AHEAD; i++) {
-        page.next();
-    }
+    // Turning far ahead stops at the last loaded day, 30 Nov 2026:
+    // November needs six rows of weeks
+    page.open();
+    page.move(data, 100);
     drawCalendar(canvas, data, page, "out/calendar-4-six-weeks.pbm");
 
-    // Before the first download
-    data.calendar = CalendarData();
-    page.showToday();
-    drawCalendar(canvas, data, page, "out/calendar-5-not-loaded.pbm");
+    // The feed had too many events: the days after calendarLastDay are unknown
+    page.open();
+    page.move(data, 3);
+    data.calendarLastDay = today + 1;
+    drawCalendar(canvas, data, page, "out/calendar-5-cut.pbm");
+    page.toggleView();
+    drawCalendar(canvas, data, page, "out/calendar-6-week-cut.pbm");
 
-    if (checksFailed == 0) {
+    // Before the first download
+    data.calendarValid = false;
+    data.eventCount = 0;
+    page.open();
+    drawCalendar(canvas, data, page, "out/calendar-7-not-loaded.pbm");
+
+    if (checksFailed == failedBefore) {
         printf("Calendar checks passed\n");
+    }
+}
+
+// ---------- GitHub ----------
+
+// An answer shaped like GitHub's GraphQL one: `days` days up to lastDay in
+// weeks from Sunday. Weekdays are busier; the newest `streakDays` days all
+// have contributions (today: 3, level 2), the day before them none.
+static std::string demoGitHubAnswer(int32_t lastDay, int days, int streakDays) {
+    static const char* const LEVELS[5] = {"NONE", "FIRST_QUARTILE", "SECOND_QUARTILE", "THIRD_QUARTILE",
+                                          "FOURTH_QUARTILE"};
+    std::string json = "{\"data\":{\"viewer\":{\"login\":\"octocat\",\"contributionsCollection\":"
+                       "{\"contributionCalendar\":{\"totalContributions\":1234,\"weeks\":[";
+    unsigned seed = 11;
+    bool weekOpen = false;
+    char text[128];
+    for (int32_t day = lastDay - days + 1; day <= lastDay; day++) {
+        int age = int(lastDay - day);
+        int level;
+        if (age < streakDays) {
+            level = age == 0 ? 2 : 1 + age % 4;
+        } else if (age == streakDays) {
+            level = 0;
+        } else {
+            seed = seed * 1103515245 + 12345;
+            int r = (seed >> 16) % 10;
+            bool weekend = DateUtil::weekday(day) >= 5;
+            level = weekend ? (r < 7 ? 0 : 1) : (r < 3 ? 0 : r < 5 ? 1 : r < 7 ? 2 : r < 9 ? 3 : 4);
+        }
+        int count = level == 0 ? 0 : age == 0 ? 3 : level * 2;
+
+        if (!weekOpen) {
+            json += "{\"contributionDays\":[";
+            weekOpen = true;
+        } else if (GitHubData::rowOf(day) == 0) {
+            json += "]},{\"contributionDays\":[";  // A new week from Sunday
+        } else {
+            json += ",";
+        }
+        int year, month, dayOfMonth;
+        DateUtil::civilFromDays(day, year, month, dayOfMonth);
+        snprintf(text, sizeof(text),
+                 "{\"contributionCount\":%d,\"contributionLevel\":\"%s\",\"date\":\"%04d-%02d-%02d\"}", count,
+                 LEVELS[level], year, month, dayOfMonth);
+        json += text;
+    }
+    json += "]}]}}}}}";
+    return json;
+}
+
+// Reads a demo answer into data (for the widget pictures), checking the parser on the way
+static void loadDemoGitHub(AppData& data) {
+    int failedBefore = checksFailed;
+    int32_t today = DateUtil::dayOf(data.now);
+    JsonDocument doc;
+    GitHubContributions& g = data.github;
+
+    check(!deserializeJson(doc, demoGitHubAnswer(today, GITHUB_MAX_DAYS, 6)), "GitHub demo answer is JSON");
+    check(readContributions(doc.as<JsonObjectConst>(), g), "GitHub answer is read");
+    check(strcmp(g.login, "octocat") == 0 && g.total == 1234, "login and yearly total");
+    check(g.lastDay == today && g.dayCount == GITHUB_MAX_DAYS, "every day placed, up to today");
+    check(g.lastDayCount == 3 && GitHubData::levelOn(g, today) == 2, "today's count and level");
+    check(GitHubData::levelOn(g, today + 1) == -1 && GitHubData::levelOn(g, today - GITHUB_MAX_DAYS) == -1,
+          "days outside the data have no level");
+    check(GitHubData::streak(g) == 6, "6-day streak");
+    data.githubTokenSet = true;
+    data.githubValid = true;
+    check(GitHubData::today(data) == 3, "3 contributions today");
+
+    // Nothing yet today doesn't end the streak, the day isn't over
+    GitHubContributions noneToday = g;
+    noneToday.levels[noneToday.dayCount - 1] = 0;
+    check(GitHubData::streak(noneToday) == 5, "an empty today keeps yesterday's streak");
+
+    // More days than fit: the newest are kept
+    GitHubContributions longer;
+    deserializeJson(doc, demoGitHubAnswer(today, GITHUB_MAX_DAYS + 9, 6));
+    check(readContributions(doc.as<JsonObjectConst>(), longer) && longer.dayCount == GITHUB_MAX_DAYS &&
+              longer.lastDay == today && longer.lastDayCount == 3 && GitHubData::streak(longer) == 6,
+          "a longer answer keeps the newest days");
+
+    // A refused token: GraphQL answers with errors and no data
+    GitHubContributions refused;
+    deserializeJson(doc, "{\"errors\":[{\"message\":\"Bad credentials\"}]}");
+    check(!readContributions(doc.as<JsonObjectConst>(), refused), "an error answer is not read");
+
+    if (checksFailed == failedBefore) {
+        printf("GitHub checks passed\n");
+    }
+}
+
+// ---------- Now playing ----------
+
+// A message from the extension, as main.cpp's applyNowPlaying() stores it,
+// received `ago` seconds before data.epoch
+static void playSong(AppData& data, const char* json, long ago) {
+    NowPlaying song;
+    check(parseNowPlaying(json, song), "music message is read");
+    data.musicValid = true;
+    data.musicOpen = song.title[0] != '\0';
+    data.musicPlaying = song.playing;
+    strcpy(data.musicTitle, song.title);
+    strcpy(data.musicArtist, song.artist);
+    strcpy(data.musicAlbum, song.album);
+    data.musicPosition = song.position;
+    data.musicDuration = song.duration;
+    data.musicUpdated = data.epoch - ago;
+}
+
+static void checkNowPlaying(AppData data) {
+    int failedBefore = checksFailed;
+    NowPlaying song;
+
+    check(!parseNowPlaying("{\"artist\":\"x\"}", song), "a message without title or state is refused");
+    check(!parseNowPlaying("not json", song), "not JSON is refused");
+    check(parseNowPlaying("{\"title\":\"Beyonc\xC3\xA9\",\"playing\":false}", song) &&
+              strcmp(song.title, "Beyonce") == 0,
+          "what the extension didn't make plain is converted here");
+    check(parseNowPlaying("{\"title\":\"x\",\"playing\":true,\"position\":500,\"duration\":200}", song) &&
+              song.position == 200,
+          "the position is kept inside the song");
+
+    playSong(data, "{\"title\":\"x\",\"playing\":true,\"position\":100,\"duration\":200}", 40);
+    check(MusicData::active(data) && MusicData::position(data) == 140, "playing: the time counts on");
+    data.musicPlaying = false;
+    check(MusicData::position(data) == 100, "paused: the time stays");
+    data.musicPlaying = true;
+    data.musicUpdated = data.epoch - 59;
+    check(MusicData::position(data) == 159 && MusicData::active(data), "still active just before the timeout");
+    data.musicUpdated = data.epoch - MUSIC_STALE_S - 1;
+    check(!MusicData::active(data) && MusicData::hasLast(data), "no message for a while: nothing plays");
+    playSong(data, "{\"title\":\"x\",\"playing\":true,\"position\":190,\"duration\":200}", 50);
+    check(MusicData::position(data) == 200, "the time stops at the end of the song");
+
+    char text[16];
+    MusicData::formatTime(text, sizeof(text), 3723);
+    check(strcmp(text, "1:02:03") == 0, "hours in long times");
+
+    // Plain ASCII for the display's fonts
+    char plain[64];
+    struct {
+        const char* in;
+        const char* out;
+    } texts[] = {
+        {"Beyonc\xC3\xA9", "Beyonce"},
+        {"\xC5\x81\xC3\xB3" "d\xC5\xBA, Stra\xC3\x9F" "e", "Lodz, Strasse"},
+        {"\xD0\x9E\xD0\xBA\xD0\xB5\xD0\xB0\xD0\xBD \xD0\x95\xD0\xBB\xD1\x8C\xD0\xB7\xD0\xB8", "Okean Elzy"},
+        {"\xD0\xA9\xD0\xB5\xD0\xB4\xD1\x80\xD0\xB8\xD0\xBA", "Shchedryk"},
+        {"Don\xE2\x80\x99t Stop \xE2\x80\x94 Live\xE2\x80\xA6", "Don't Stop - Live..."},
+        {"Cafe\xCC\x81", "Cafe"},
+        {"\xF0\x9F\x8E\xB5 Song  \xF0\x9F\x94\xA5 ", "Song"},
+        {"\xE6\x9D\xB1\xE4\xBA\xAC Tokyo", "?? Tokyo"},
+        {"broken \xC3", "broken"},
+    };
+    bool allPlain = true;
+    for (const auto& t : texts) {
+        toPlainText(t.in, plain, sizeof(plain));
+        if (strcmp(plain, t.out) != 0) {
+            printf("  plain text: \"%s\" instead of \"%s\"\n", plain, t.out);
+            allPlain = false;
+        }
+    }
+    check(allPlain, "accents, Polish, German, Ukrainian, punctuation, emoji and other scripts");
+    toPlainText("Okean Elzy - Obiimy", plain, 9);
+    check(strcmp(plain, "Okean El") == 0, "cut to fit, always ends");
+
+    if (checksFailed == failedBefore) {
+        printf("Music checks passed\n");
+    }
+}
+
+static void saveMusicPages(GFXcanvas1& canvas, const AppData& source) {
+    static AppData data;  // Large because of the event list
+    data = source;
+    checkNowPlaying(data);
+    MusicPage page;
+    WidgetPage widgets;
+
+    // Playing, 2:22 of 4:38 (sent 40 s ago at 1:42)
+    playSong(data,
+             "{\"title\":\"Fourth of July\",\"artist\":\"Sufjan Stevens\",\"album\":\"Carrie & Lowell\","
+             "\"playing\":true,\"position\":102,\"duration\":278}",
+             40);
+    canvas.fillScreen(COLOR_BG);
+    page.draw(canvas, data);
+    savePbm(canvas, "out/music.pbm");
+    setWidgets(data, "music:L,music:M,music:S,music:W");
+    canvas.fillScreen(COLOR_BG);
+    widgets.draw(canvas, data);
+    savePbm(canvas, "out/home2-music.pbm");
+    MenuPage menu;
+    menu.select(MenuPage::MUSIC);
+    canvas.fillScreen(COLOR_BG);
+    menu.draw(canvas, data);
+    savePbm(canvas, "out/menu-music.pbm");
+
+    // Paused, with a title too long for the big font
+    playSong(data,
+             "{\"title\":\"Hey Jude - Remastered 2015 (Live at the Very Long Concert Hall)\","
+             "\"artist\":\"The Beatles\",\"album\":\"\",\"playing\":false,\"position\":30,\"duration\":431}",
+             5);
+    canvas.fillScreen(COLOR_BG);
+    page.draw(canvas, data);
+    savePbm(canvas, "out/music-paused.pbm");
+    canvas.fillScreen(COLOR_BG);
+    widgets.draw(canvas, data);
+    savePbm(canvas, "out/home2-music-paused.pbm");
+
+
+    // The browser was closed: nothing playing, the last song stays
+    data.musicUpdated = data.epoch - 10 * 60;
+    canvas.fillScreen(COLOR_BG);
+    page.draw(canvas, data);
+    savePbm(canvas, "out/music-empty.pbm");
+    canvas.fillScreen(COLOR_BG);
+    widgets.draw(canvas, data);
+    savePbm(canvas, "out/home2-music-empty.pbm");
+
+    // The extension never sent anything
+    data.musicValid = false;
+    data.musicTitle[0] = '\0';
+    canvas.fillScreen(COLOR_BG);
+    page.draw(canvas, data);
+    savePbm(canvas, "out/music-none.pbm");
+}
+
+// ---------- Weather answer ----------
+
+static bool weatherFrom(const char* json, Weather& out) {
+    JsonDocument doc;
+    return !deserializeJson(doc, json) && readWeather(doc.as<JsonObjectConst>(), out);
+}
+
+static void checkWeather() {
+    int failedBefore = checksFailed;
+    Weather w;
+
+    // Shortened real answer from /data/2.5/weather?units=metric
+    check(weatherFrom("{\"weather\":[{\"id\":803,\"main\":\"Clouds\"}],\"main\":{\"temp\":-3.4,\"feels_like\":-8.9,"
+                      "\"humidity\":86},\"wind\":{\"speed\":4.6,\"deg\":230},"
+                      "\"sys\":{\"country\":\"FI\",\"sunrise\":1794812400,\"sunset\":1794837600},\"name\":\"Kuopio\"}",
+                      w),
+          "weather answer is read");
+    check(w.code == 803 && fabsf(w.temperature + 3.4f) < 0.01f && fabsf(w.feelsLike + 8.9f) < 0.01f,
+          "condition, temperature and feels like");
+    check(fabsf(w.windSpeed - 4.6f) < 0.01f && w.windDeg == 230, "wind speed and direction");
+    check(w.sunrise == 1794812400 && w.sunset == 1794837600, "sunrise and sunset");
+
+    // Calm, polar night: no wind direction, no sunrise or sunset, no feels like
+    check(weatherFrom("{\"weather\":[{\"id\":600}],\"main\":{\"temp\":-24},\"wind\":{\"speed\":0.3},\"sys\":{}}", w),
+          "optional values may be missing");
+    check(w.windDeg == -1 && w.sunrise == 0 && w.sunset == 0 && w.feelsLike == -24,
+          "missing values: no direction, no sunrise, feels like = temperature");
+
+    check(!weatherFrom("{\"cod\":401,\"message\":\"Invalid API key\"}", w), "an error answer is not read");
+    check(!weatherFrom("{\"weather\":[],\"main\":{\"temp\":5}}", w), "no condition code: not read");
+    check(!weatherFrom("{\"weather\":[{\"id\":800}],\"main\":{}}", w), "no temperature: not read");
+    check(!weatherFrom("{\"weather\":[{\"id\":800}],\"main\":{\"temp\":\"warm\"}}", w), "a text temperature: not read");
+
+    // Redraw only when something on the screen changes
+    static AppData data;
+    data = AppData();
+    Weather now;
+    now.temperature = 20.3f;
+    now.code = 800;
+    now.feelsLike = 19.6f;
+    now.windSpeed = 3.2f;
+    now.windDeg = 90;
+    now.sunrise = 1794812400;
+    now.sunset = 1794837600;
+    check(storeWeather(now, data) && data.weatherValid && data.outdoorTemp == 20.3f, "the first weather redraws");
+    check(!storeWeather(now, data), "the same weather doesn't redraw");
+    Weather next = now;
+    next.temperature = 20.4f;
+    next.windSpeed = 3.4f;
+    next.sunrise += 30;  // Same minute
+    check(!storeWeather(next, data), "changes too small to show don't redraw");
+    check(data.outdoorTemp == 20.4f, "... but the new values are kept");
+    next.temperature = 20.6f;
+    check(storeWeather(next, data), "21 instead of 20 degrees redraws");
+    next.windDeg = 100;
+    check(storeWeather(next, data), "a new wind direction redraws");
+    next.code = 500;
+    check(storeWeather(next, data), "rain instead of clear sky redraws");
+    next.sunset += 60;
+    check(storeWeather(next, data), "sunset a minute later redraws");
+
+    // Icons: the code picks one, the moon after sunset
+    check(weatherIconFromCode(800) == WeatherIcon::CLEAR && weatherIconFromCode(800, true) == WeatherIcon::CLEAR_NIGHT &&
+              weatherIconFromCode(801, true) == WeatherIcon::FEW_CLOUDS_NIGHT,
+          "clear and few clouds have night icons");
+    check(weatherIconFromCode(802) == WeatherIcon::CLOUDS && weatherIconFromCode(804) == WeatherIcon::OVERCAST &&
+              weatherIconFromCode(0) == WeatherIcon::CLOUDS && weatherIconFromCode(804, true) == WeatherIcon::OVERCAST,
+          "clouds, overcast, unknown code");
+    check(weatherIconFromCode(500) == WeatherIcon::RAIN && weatherIconFromCode(502) == WeatherIcon::HEAVY_RAIN &&
+              weatherIconFromCode(522) == WeatherIcon::HEAVY_RAIN && weatherIconFromCode(311) == WeatherIcon::DRIZZLE,
+          "light and heavy rain, drizzle");
+    check(weatherIconFromCode(511) == WeatherIcon::SLEET && weatherIconFromCode(615) == WeatherIcon::SLEET &&
+              weatherIconFromCode(601) == WeatherIcon::SNOW,
+          "freezing rain and rain with snow are sleet");
+    check(weatherIconFromCode(781) == WeatherIcon::WIND && weatherIconFromCode(741) == WeatherIcon::ATMOSPHERE &&
+              weatherIconFromCode(211) == WeatherIcon::THUNDERSTORM,
+          "tornado is wind, fog is mist");
+    const time_t rise = 1794812400, set = rise + 11 * 3600;  // 11 hours of daylight
+    check(!isNight(rise + 3600, rise, set) && isNight(set + 60, rise, set) && isNight(rise - 60, rise, set),
+          "night is between sunset and sunrise");
+    check(!isNight(rise + 86400 + 3600, rise, set) && isNight(set + 86400 + 60, rise, set),
+          "yesterday's sunrise and sunset still work");
+    check(!isNight(rise, 0, 0) && !isNight(0, rise, set), "unknown sunrise or time: day");
+
+    if (checksFailed == failedBefore) {
+        printf("Weather checks passed\n");
+    }
+}
+
+// ---------- Download schedule ----------
+
+// Local time on 16 Nov 2026 (Finnish time, see main())
+static time_t localTime(int dayOffset, int hour, int minute) {
+    struct tm t = {};
+    t.tm_year = 2026 - 1900;
+    t.tm_mon = 10;
+    t.tm_mday = 16 + dayOffset;
+    t.tm_hour = hour;
+    t.tm_min = minute;
+    t.tm_isdst = -1;
+    return mktime(&t);
+}
+
+// Prices data at `hour` today, with quarter-hours for `days` days from today (or from yesterday)
+static void pricesAt(AppData& data, int hour, int firstDay, int days) {
+    time_t moment = localTime(0, hour, 0);
+    data.epoch = moment;
+    localtime_r(&moment, &data.now);
+    data.priceCount = 0;
+    for (int d = 0; d < days; d++) {
+        for (int q = 0; q < 96; q++) {
+            data.prices[data.priceCount++].start = localTime(firstDay + d, 0, 0) + q * 15 * 60;
+        }
+    }
+    data.pricesValid = data.priceCount > 0;
+}
+
+static void checkSchedule() {
+    namespace Fetch = FetchSchedule;  // Its MINUTE_MS is the same as this file's
+    int failedBefore = checksFailed;
+
+    Fetch::Timer timer;
+    check(timer.due(0, 15 * MINUTE_MS, false), "the first download starts at once");
+    check(!timer.due(14 * MINUTE_MS, 15 * MINUTE_MS, false), "not again before the interval");
+    check(timer.due(15 * MINUTE_MS, 15 * MINUTE_MS, false), "again after the interval");
+    check(timer.due(15 * MINUTE_MS + 1, 15 * MINUTE_MS, true), "refresh skips the interval");
+
+    // millis() goes back to 0 after 49.7 days
+    Fetch::Timer wrap;
+    uint32_t start = 0xFFFFFFFFu - MINUTE_MS;
+    wrap.due(start, 15 * MINUTE_MS, false);
+    check(!wrap.due(start + 14 * MINUTE_MS, 15 * MINUTE_MS, false), "the interval holds when millis() wraps");
+    check(wrap.due(start + 15 * MINUTE_MS, 15 * MINUTE_MS, false), "and ends on time");
+
+    // Prices: refresh never asks more often than every 2 minutes
+    Fetch::Timer prices;
+    prices.due(0, 6 * 60 * MINUTE_MS, false, Fetch::PRICES_MIN_GAP_MS);
+    check(!prices.due(MINUTE_MS, 6 * 60 * MINUTE_MS, true, Fetch::PRICES_MIN_GAP_MS), "price refresh waits 2 minutes");
+    check(prices.due(Fetch::PRICES_MIN_GAP_MS, 6 * 60 * MINUTE_MS, true, Fetch::PRICES_MIN_GAP_MS), "then refresh works");
+
+    static AppData data;
+    data = AppData();
+    check(Fetch::weatherInterval(data) == MINUTE_MS && Fetch::calendarInterval(data) == 2 * MINUTE_MS &&
+              Fetch::githubInterval(data) == 5 * MINUTE_MS,
+          "before the first answer: try again soon");
+    data.weatherValid = data.calendarValid = data.githubValid = true;
+    check(Fetch::weatherInterval(data) == 15 * MINUTE_MS && Fetch::calendarInterval(data) == 30 * MINUTE_MS &&
+              Fetch::githubInterval(data) == 30 * MINUTE_MS,
+          "after that: weather 15 min, calendar and GitHub 30 min");
+
+    pricesAt(data, 10, 0, 0);
+    check(Fetch::pricesInterval(data) == 5 * MINUTE_MS, "no prices: every 5 min");
+    pricesAt(data, 10, -1, 1);
+    check(Fetch::pricesInterval(data) == 5 * MINUTE_MS, "only yesterday's prices: every 5 min");
+    pricesAt(data, 10, 0, 1);
+    check(Fetch::pricesInterval(data) == 6 * 60 * MINUTE_MS, "today's prices in the morning: every 6 h");
+    pricesAt(data, 14, 0, 1);
+    check(Fetch::pricesInterval(data) == 30 * MINUTE_MS, "from 14:00 until tomorrow's are out: every 30 min");
+    pricesAt(data, 15, 0, 2);
+    check(Fetch::pricesInterval(data) == 6 * 60 * MINUTE_MS, "tomorrow's prices are there: every 6 h");
+
+    if (checksFailed == failedBefore) {
+        printf("Schedule checks passed\n");
+    }
+}
+
+// ---------- Buttons ----------
+
+static void checkButtons() {
+    int failedBefore = checksFailed;
+
+    PressGesture tap(3000);
+    check(tap.update(false, 0) == PressGesture::NONE, "nothing happens without a touch");
+    check(tap.update(true, 100) == PressGesture::DOWN && tap.isDown(), "touch starts");
+    check(tap.update(true, 400) == PressGesture::NONE, "a short touch is no hold yet");
+    check(tap.update(false, 500) == PressGesture::TAP && !tap.isDown(), "letting go is a tap");
+
+    PressGesture hold(3000);
+    hold.update(true, 1000);
+    check(hold.update(true, 3999) == PressGesture::NONE, "no hold before 3 s");
+    check(hold.update(true, 4000) == PressGesture::HOLD, "hold after 3 s, while still held");
+    check(hold.update(true, 9000) == PressGesture::NONE, "the hold fires once");
+    check(hold.update(false, 9100) == PressGesture::NONE, "letting go after a hold is no tap");
+    check(hold.update(true, 9500) == PressGesture::DOWN && hold.update(false, 9600) == PressGesture::TAP,
+          "the next touch is a tap again");
+
+    // The loop was busy (E-Ink refresh): only the interrupt saw the touch, the pin is LOW already
+    PressGesture missed(3000);
+    missed.update(true, 20000);
+    check(missed.update(false, 20000) == PressGesture::TAP, "a touch seen only by the interrupt is a tap");
+
+    PressGesture wrap(800);
+    wrap.update(true, 0xFFFFFFFFu - 100);
+    check(wrap.update(true, 699) == PressGesture::HOLD, "hold works when millis() wraps");
+
+    if (checksFailed == failedBefore) {
+        printf("Button checks passed\n");
+    }
+}
+
+// ---------- Widget layout ----------
+
+static bool slotIs(const WidgetSlot& s, uint8_t type, uint8_t col, uint8_t row, uint8_t cols, uint8_t rows) {
+    return s.type == type && s.col == col && s.row == row && s.cols == cols && s.rows == rows;
+}
+
+// Every widget inside the grid, in its size, none on top of another; `cells` = cells used
+static bool fitsGrid(const WidgetSlot* slots, int count, int& cells) {
+    bool used[WIDGET_ROWS][WIDGET_COLS] = {};
+    cells = 0;
+    for (int i = 0; i < count; i++) {
+        const WidgetSlot& s = slots[i];
+        if (s.cols != sizeCols(s.size) || s.rows != sizeRows(s.size) || s.col + s.cols > WIDGET_COLS ||
+            s.row + s.rows > WIDGET_ROWS) {
+            return false;
+        }
+        for (int r = s.row; r < s.row + s.rows; r++) {
+            for (int c = s.col; c < s.col + s.cols; c++) {
+                if (used[r][c]) {
+                    return false;
+                }
+                used[r][c] = true;
+                cells++;
+            }
+        }
+    }
+    return true;
+}
+
+static void checkWidgetLayout() {
+    int failedBefore = checksFailed;
+    WidgetSlot slots[MAX_WIDGETS];
+    char text[200];
+
+    int count = layoutWidgets("clock:S,weather:L,date:M", slots, MAX_WIDGETS);
+    check(count == 3 && slotIs(slots[0], WIDGET_CLOCK, 0, 0, 1, 1) && slotIs(slots[1], WIDGET_WEATHER, 1, 0, 2, 2) &&
+              slotIs(slots[2], WIDGET_DATE, 0, 2, 2, 1),
+          "each widget goes to the first free spot, row by row");
+
+    count = layoutWidgets("agenda:L,weather:W,clock:S,date:S,co2:S", slots, MAX_WIDGETS);
+    check(count == 5 && slotIs(slots[1], WIDGET_WEATHER, 0, 2, 4, 1) && slotIs(slots[2], WIDGET_CLOCK, 2, 0, 1, 1) &&
+              slotIs(slots[4], WIDGET_CO2, 2, 1, 1, 1),
+          "small widgets fill the gaps a big one left");
+
+    count = layoutWidgets("price:W,price:W,price:W,clock:S", slots, MAX_WIDGETS);
+    check(count == 3, "a full grid leaves the rest out");
+    count = layoutWidgets("agenda:L,claude:L,next:L,clock:S", slots, MAX_WIDGETS);
+    check(count == 3 && slotIs(slots[2], WIDGET_CLOCK, 0, 2, 1, 1), "a widget that doesn't fit is skipped, the next one still goes in");
+
+    count = layoutWidgets("clock:S,radio:M,date:X,date:,:S,weather,co2:s", slots, MAX_WIDGETS);
+    check(count == 1 && slots[0].type == WIDGET_CLOCK, "unknown widgets and sizes are skipped");
+    check(layoutWidgets("", slots, MAX_WIDGETS) == 0 && layoutWidgets(nullptr, slots, MAX_WIDGETS) == 0,
+          "an empty layout has no widgets");
+    check(layoutWidgets("clock:S,date:S,co2:S", slots, 2) == 2, "no more widgets than there is room for");
+
+    std::string many;
+    for (int i = 0; i < 14; i++) {
+        many += i > 0 ? ",co2:S" : "co2:S";
+    }
+    check(layoutWidgets(many.c_str(), slots, MAX_WIDGETS) == MAX_WIDGETS, "at most 12 widgets");
+
+    // Random layouts: always inside the grid without overlaps, and a 1 x 1
+    // widget at the end is only left out when no cell is free
+    unsigned seed = 5;
+    bool allFit = true;
+    bool smallPlaced = true;
+    for (int round = 0; round < 3000; round++) {
+        std::string layout;
+        seed = seed * 1103515245 + 12345;
+        int entries = (seed >> 16) % (MAX_WIDGETS - 1);
+        for (int i = 0; i < entries; i++) {
+            seed = seed * 1103515245 + 12345;
+            uint8_t type = (seed >> 16) % WIDGET_TYPE_COUNT;
+            uint8_t size = (seed >> 24) % SIZE_COUNT;
+            layout += std::string(i > 0 ? "," : "") + widgetCode(type) + ":" + sizeCode(size);
+        }
+        int cells;
+        count = layoutWidgets(layout.c_str(), slots, MAX_WIDGETS);
+        allFit &= fitsGrid(slots, count, cells);
+        int withSmall = layoutWidgets((layout + (entries > 0 ? "," : "") + "clock:S").c_str(), slots, MAX_WIDGETS);
+        smallPlaced &= withSmall == count + (cells < WIDGET_COLS * WIDGET_ROWS ? 1 : 0);
+    }
+    check(allFit, "random layouts stay inside the grid without overlaps");
+    check(smallPlaced, "a 1 x 1 widget always finds a free cell");
+
+    check(normalizeWidgets("clock:S,radio:M,weather:L,date:Q", text, sizeof(text)) &&
+              strcmp(text, "clock:S,weather:L") == 0,
+          "cleaning keeps only known widgets and sizes");
+    check(!normalizeWidgets("radio:M", text, sizeof(text)) && text[0] == '\0', "nothing valid: empty and false");
+    check(normalizeWidgets(many.c_str(), text, sizeof(text)) && strlen(text) == 12 * 6 - 1, "cleaning keeps 12 entries");
+    check(normalizeWidgets("clock:S,weather:L", text, 10) && strcmp(text, "clock:S") == 0,
+          "a short buffer gets whole entries only");
+    check(layoutWidgets(DEFAULT_WIDGETS, slots, MAX_WIDGETS) == 7, "the default layout fits");
+
+    // Several pages, separated by "|"
+    const char* pages = "clock:L,date:S|github:W,price:M|";
+    check(widgetPageCount(pages) == 3 && widgetPageCount("") == 1 && widgetPageCount(DEFAULT_WIDGETS) == 1,
+          "pages are counted, an empty text is one empty page");
+    check(layoutWidgets(pages, slots, MAX_WIDGETS, 0) == 2 && slots[1].type == WIDGET_DATE,
+          "the first page ends at the |");
+    check(layoutWidgets(pages, slots, MAX_WIDGETS, 1) == 2 && slotIs(slots[0], WIDGET_GITHUB, 0, 0, 4, 1),
+          "the second page is placed on its own grid");
+    check(layoutWidgets(pages, slots, MAX_WIDGETS, 2) == 0 && layoutWidgets(pages, slots, MAX_WIDGETS, 3) == 0,
+          "an empty page and a missing page have no widgets");
+    check(normalizeWidgets("clock:L,radio:S||github:W,price:X", text, sizeof(text)) &&
+              strcmp(text, "clock:L||github:W") == 0,
+          "cleaning keeps every page, empty ones too");
+    check(normalizeWidgets("co2:S|co2:S|co2:S|co2:S|co2:S|co2:S|co2:S", text, sizeof(text)) &&
+              strcmp(text, "co2:S|co2:S|co2:S|co2:S|co2:S") == 0,
+          "at most 5 pages");
+    check(!normalizeWidgets("|radio:M", text, sizeof(text)) && strcmp(text, "|") == 0,
+          "only empty pages: kept, but false");
+
+    // Dedicated pages ("@calendar") and widget pages in one list
+    PageEntry list[MAX_PAGES];
+    const char* mixed = "@home|clock:L|@calendar|github:W|@music|@pomodoro|@prices";
+    int listed = readPages(mixed, list, MAX_PAGES);
+    std::string order;
+    for (int i = 0; i < listed; i++) {
+        order += list[i].kind == PAGE_WIDGETS ? "w" + std::to_string(list[i].grid) + " " :
+                                                std::string(pageCode(list[i].kind)) + " ";
+    }
+    check(order == "home w0 calendar w1 music pomodoro prices ", "the list keeps the order of the text");
+    check(widgetPageCount(mixed) == 2 && layoutWidgets(mixed, slots, MAX_WIDGETS, 1) == 1 &&
+              slots[0].type == WIDGET_GITHUB,
+          "widget pages are counted without the dedicated ones");
+    check(readPages("@home|@calendar|@home|@radio|clock:S", list, MAX_PAGES) == 3 && list[2].kind == PAGE_WIDGETS,
+          "unknown and repeated dedicated pages are skipped");
+    check(readPages("@calendar", list, MAX_PAGES) == 1 && list[0].kind == PAGE_CALENDAR &&
+              widgetPageCount("@calendar") == 0,
+          "only a dedicated page, no widget page");
+    check(readPages("@radio", list, MAX_PAGES) == 1 && list[0].kind == PAGE_WIDGETS,
+          "nothing valid: one empty widget page");
+    check(normalizeWidgets("@home|clock:L,radio:S|@home|@radio|@music|", text, sizeof(text)) &&
+              strcmp(text, "@home|clock:L|@music|") == 0,
+          "cleaning keeps the order, each dedicated page once");
+    check(readPages(DEFAULT_PAGES, list, MAX_PAGES) == 2 && list[0].kind == PAGE_HOME &&
+              widgetPageCount(DEFAULT_PAGES) == 1,
+          "by default: Home, then one widget page");
+
+    // The touch button goes through the list in order, then back to the first
+    std::string steps;
+    for (int position = 0, i = 0; i < 9; i++, position = HomePages::next(position, 4)) {
+        steps += std::to_string(position + 1) + " ";
+    }
+    check(steps == "1 2 3 4 1 2 3 4 1 ", "pages 1, 2, 3, 4, 1, ...");
+    check(HomePages::next(-1, 4) == 0, "from a page that isn't in the list: the first");
+    check(HomePages::next(0, 1) == 0, "one page: it stays");
+
+    // Five full pages of the longest entries and every dedicated page fit in MAX_LAYOUT_TEXT
+    std::string full;
+    for (int page = 0; page < MAX_WIDGET_PAGES; page++) {
+        for (int i = 0; i < MAX_WIDGETS; i++) {
+            full += std::string(i > 0 ? "," : page > 0 ? "|" : "") + "weather:W";
+        }
+    }
+    full += "|@home|@calendar|@prices|@music|@pomodoro";
+    static char longest[MAX_LAYOUT_TEXT];
+    check(normalizeWidgets(full.c_str(), longest, sizeof(longest)) && full == longest,
+          "the longest layout fits in MAX_LAYOUT_TEXT");
+
+    for (uint8_t t = 0; t < WIDGET_TYPE_COUNT; t++) {
+        snprintf(text, sizeof(text), "%s:W", widgetCode(t));
+        count = layoutWidgets(text, slots, MAX_WIDGETS);
+        if (count != 1 || slots[0].type != t || widgetName(t)[0] == '\0') {
+            check(false, "every widget has a code and a name");
+        }
+    }
+
+    if (checksFailed == failedBefore) {
+        printf("Widget layout checks passed\n");
+    }
+}
+
+// ---------- Electricity prices ----------
+
+static time_t localMidnight(int year, int month, int day) {
+    struct tm t = {};
+    t.tm_year = year - 1900;
+    t.tm_mon = month - 1;
+    t.tm_mday = day;
+    t.tm_isdst = -1;
+    return mktime(&t);
+}
+
+// Cents = the local hour; on the October change day the repeated hour costs 10, then 20
+static float hourPrice(time_t moment) {
+    struct tm local;
+    localtime_r(&moment, &local);
+    if (local.tm_mon == 9 && local.tm_hour == 3) {
+        return local.tm_isdst > 0 ? 10 : 20;
+    }
+    return float(local.tm_hour);
+}
+
+static float flatPrice(time_t) {
+    return 5;
+}
+
+// Every quarter-hour of one local day, `skipHour` left out (-1 = none); returns the count
+static int fillPrices(AppData& data, int year, int month, int day, float (*cents)(time_t), int skipHour = -1) {
+    data.priceCount = 0;
+    time_t end = localMidnight(year, month, day + 1);
+    for (time_t t = localMidnight(year, month, day); t < end && data.priceCount < MAX_PRICES; t += 15 * 60) {
+        if (DateUtil::localMinute(t) / 60 == skipHour) {
+            continue;
+        }
+        data.prices[data.priceCount].start = t;
+        data.prices[data.priceCount].cents = cents(t);
+        data.priceCount++;
+    }
+    data.pricesValid = true;
+    return data.priceCount;
+}
+
+static void checkElectricity() {
+    using namespace ElectricityData;
+    int failedBefore = checksFailed;
+    static AppData data;
+    data = AppData();
+    int32_t day = DateUtil::daysFromCivil(2026, 11, 16);
+    char text[16];
+
+    check(fillPrices(data, 2026, 11, 16, hourPrice) == 96, "a normal day has 96 quarter-hours");
+    DayPrices d = dayPrices(data, day);
+    check(d.any && d.hourly[5] == 5 && d.minimum == 0 && d.maximum == 23 && fabsf(d.average - 11.5f) < 0.01f,
+          "hourly prices, minimum, maximum and average");
+    check(!dayPrices(data, day + 1).any, "a day without prices has none");
+    check(hasDay(data, day) && !hasDay(data, day + 1), "which days have prices");
+
+    check(cheapestHours(d, 0, 3) == 0 && cheapestHours(d, 10, 3) == 10, "the cheapest 3 hours from a given hour");
+    check(cheapestHours(d, 21, 3) == 21 && cheapestHours(d, 22, 3) == -1, "a run must end by midnight");
+    fillPrices(data, 2026, 11, 16, flatPrice);
+    check(cheapestHours(dayPrices(data, day), 5, 3) == 5, "equal prices: the earliest run");
+    fillPrices(data, 2026, 11, 16, hourPrice, 2);
+    check(cheapestHours(dayPrices(data, day), 0, 3) == 3, "a run never covers an hour without prices");
+
+    // Summer time starts (03:00 -> 04:00) and ends (04:00 -> 03:00 again)
+    check(fillPrices(data, 2026, 3, 29, hourPrice) == 92, "the spring change day has 92 quarter-hours");
+    d = dayPrices(data, DateUtil::daysFromCivil(2026, 3, 29));
+    check(!d.hasHour[3] && d.hasHour[2] && d.hasHour[4], "the skipped hour has no price");
+    check(fillPrices(data, 2026, 10, 25, hourPrice) == 100, "the autumn change day has 100 quarter-hours");
+    d = dayPrices(data, DateUtil::daysFromCivil(2026, 10, 25));
+    check(d.hourly[3] == 15 && d.hourly[4] == 4, "the repeated hour is the average of both");
+
+    fillPrices(data, 2026, 11, 16, hourPrice);
+    time_t slot = data.prices[5].start;
+    check(priceAt(data, slot) == &data.prices[5] && priceAt(data, slot + 899) == &data.prices[5] &&
+              priceAt(data, slot + 900) == &data.prices[6],
+          "each price holds for its 15 minutes");
+    check(priceAt(data, data.prices[0].start - 1) == nullptr, "no price before the first one");
+    data.epoch = slot;
+    check(priceNow(data) == &data.prices[5], "the price now");
+    data.epoch = 0;
+    check(priceNow(data) == nullptr, "no price now without the time");
+
+    check(strcmp(levelText(7.5f, 10), "Cheap now") == 0 && strcmp(levelText(7.6f, 10), "Normal price") == 0 &&
+              strcmp(levelText(12.5f, 10), "Expensive now") == 0,
+          "cheap or expensive: 25 % from the average");
+    check(strcmp(levelText(-0.2f, 0.4f), "Cheap now") == 0 && strcmp(levelText(0.5f, 0.4f), "Normal price") == 0,
+          "near zero the margin is at least 0.5 c");
+    check(strcmp(levelText(-3, -2), "Cheap now") == 0, "negative prices");
+
+    formatCents(text, sizeof(text), -0.04f);
+    check(strcmp(text, "0.0") == 0, "no -0.0");
+    formatCents(text, sizeof(text), -0.3f);
+    check(strcmp(text, "-0.3") == 0, "negative cents");
+    formatHours(text, sizeof(text), 22, 3);
+    check(strcmp(text, "22:00-01:00") == 0, "hours past midnight");
+
+    if (checksFailed == failedBefore) {
+        printf("Electricity checks passed\n");
+    }
+}
+
+// ---------- Claude usage message ----------
+
+static void checkClaudeUsage() {
+    int failedBefore = checksFailed;
+    ClaudeUsage u;
+    const time_t nov4 = time_t(DateUtil::daysFromCivil(2026, 11, 4)) * 86400;
+    const time_t nov6 = time_t(DateUtil::daysFromCivil(2026, 11, 6)) * 86400;
+
+    check(parseClaudeUsage("{\"session\":54.5,\"session_resets\":\"2026-11-04T17:30:00.294921+00:00\","
+                           "\"weekly\":29,\"weekly_resets\":\"2026-11-06T22:00:00+02:00\"}",
+                           u),
+          "Claude usage message is read");
+    check(u.sessionPercent == 54.5f && u.weeklyPercent == 29, "session and weekly percent");
+    check(u.sessionResets == nov4 + 17 * 3600 + 30 * 60, "reset time, fractions of a second dropped");
+    check(u.weeklyResets == nov6 + 20 * 3600, "reset time with a time zone");
+
+    check(parseClaudeUsage("{\"session\":0,\"weekly\":100}", u) && u.sessionResets == 0 && u.weeklyResets == 0,
+          "no reset times: unknown");
+    check(parseClaudeUsage("{\"session\":1,\"weekly\":2,\"session_resets\":\"tomorrow\"}", u) && u.sessionResets == 0,
+          "a bad reset time is unknown, the numbers still count");
+    check(!parseClaudeUsage("{\"session\":54}", u), "no weekly number: refused");
+    check(!parseClaudeUsage("{\"session\":\"54\",\"weekly\":29}", u), "a number as text: refused");
+    check(!parseClaudeUsage("{}", u) && !parseClaudeUsage("not json", u) && !parseClaudeUsage("", u),
+          "empty or not JSON: refused");
+
+    if (checksFailed == failedBefore) {
+        printf("Claude usage checks passed\n");
+    }
+}
+
+// ---------- Dates ----------
+
+static void checkDates() {
+    using namespace DateUtil;
+    int failedBefore = checksFailed;
+
+    // Every day from 1900 to 2100: day numbers go up by one and convert back
+    bool continuous = true;
+    int32_t expected = daysFromCivil(1900, 1, 1);
+    for (int year = 1900; year <= 2100; year++) {
+        for (int month = 1; month <= 12; month++) {
+            for (int day = 1; day <= daysInMonth(year, month); day++) {
+                int y, m, dd;
+                civilFromDays(expected, y, m, dd);
+                continuous &= daysFromCivil(year, month, day) == expected && y == year && m == month && dd == day;
+                expected++;
+            }
+        }
+    }
+    check(continuous, "day numbers are continuous and convert back (1900-2100)");
+    check(daysFromCivil(1970, 1, 1) == 0 && weekday(0) == 3 && weekday(-1) == 2,
+          "1 Jan 1970 is day 0, a Thursday; the day before a Wednesday");
+
+    check(daysInMonth(2028, 2) == 29 && daysInMonth(2026, 2) == 28 && daysInMonth(2000, 2) == 29 &&
+              daysInMonth(2100, 2) == 28,
+          "leap years");
+    check(isoWeek(daysFromCivil(2026, 12, 31)) == 53 && isoWeek(daysFromCivil(2027, 1, 1)) == 53 &&
+              isoWeek(daysFromCivil(2027, 1, 4)) == 1,
+          "2026 has 53 weeks, 1 Jan 2027 is still in week 53");
+    check(isoWeek(daysFromCivil(2024, 12, 30)) == 1, "30 Dec 2024 is in week 1 of 2025");
+
+    const time_t nov4 = time_t(daysFromCivil(2026, 11, 4)) * 86400;
+    check(parseIsoTime("2026-11-04T17:30:00Z") == nov4 + 17 * 3600 + 30 * 60 &&
+              parseIsoTime("2026-11-04T17:30:00") == nov4 + 17 * 3600 + 30 * 60,
+          "UTC with Z or without a zone");
+    check(parseIsoTime("2026-11-04T12:30:00-05:00") == nov4 + 17 * 3600 + 30 * 60, "a time zone behind UTC");
+    check(parseIsoTime("2026-11-04") == 0 && parseIsoTime("2026-1x-04T17:30:00Z") == 0 && parseIsoTime(nullptr) == 0 &&
+              parseIsoTime("2026-11-04T17:30:00+0200") == 0,
+          "invalid times are 0");
+
+    // 03:30 comes twice on 25 Oct 2026: at 00:30 and 01:30 UTC
+    time_t first = time_t(daysFromCivil(2026, 10, 25)) * 86400 + 30 * 60;
+    check(localMinute(first) == 3 * 60 + 30 && localMinute(first + 3600) == 3 * 60 + 30 &&
+              localDay(first) == daysFromCivil(2026, 10, 25),
+          "local time when summer time ends");
+
+    if (checksFailed == failedBefore) {
+        printf("Date checks passed\n");
     }
 }
 
 int main() {
     setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4", 1);  // Finnish time, like the device
     tzset();
+
+    checkWeather();
+    checkSchedule();
+    checkButtons();
+    checkWidgetLayout();
+    checkElectricity();
+    checkClaudeUsage();
+    checkDates();
 
     GFXcanvas1 canvas(SCREEN_W, SCREEN_H);
     AppData data = demoData();
@@ -360,23 +1272,22 @@ int main() {
     sleep.draw(canvas, night);
     savePbm(canvas, "out/sleep.pbm");
 
+    // Turned off (touch button held on Home), and without a synced clock
+    PowerOffPage off;
+    canvas.fillScreen(COLOR_BG);
+    off.draw(canvas, &night.now);
+    savePbm(canvas, "out/power-off.pbm");
+    canvas.fillScreen(COLOR_BG);
+    off.draw(canvas, nullptr);
+    savePbm(canvas, "out/power-off-no-time.pbm");
+
     savePomodoroPages(canvas, data);
     saveCalendarPages(canvas, data);
+    saveMusicPages(canvas, data);
 
-    printf("Saved preview images in out/\n");
-    // Calendar: today (busy), then one turn forward (Tuesday, free)
+    // 10:35, for the widget and electricity pages below
     AppData calendarData = data;
     calendarData.now.tm_min = 35;
-    CalendarPage calendar;
-    calendar.open();
-    canvas.fillScreen(COLOR_BG);
-    calendar.draw(canvas, calendarData);
-    savePbm(canvas, "out/calendar-today.pbm");
-
-    calendar.move(calendarData, 1);
-    canvas.fillScreen(COLOR_BG);
-    calendar.draw(canvas, calendarData);
-    savePbm(canvas, "out/calendar-free.pbm");
 
     // Setup page. The QR code here is only a look-alike: the real one is
     // made on the device (esp_qrcode), which doesn't build on a PC.
@@ -425,23 +1336,33 @@ int main() {
     // Second home page: the default layout, and one with every widget
     WidgetPage widgetPage;
     AppData widgetData = calendarData;
-    widgetData.widgetCount = layoutWidgets(DEFAULT_WIDGETS, widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, DEFAULT_WIDGETS);
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2.pbm");
 
-    widgetData.widgetCount =
-        layoutWidgets("agenda:L,weather:M,date:S,co2:S,price:W", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "agenda:L,weather:M,date:S,co2:S,price:W");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-all.pbm");
 
-    widgetData.widgetCount = layoutWidgets("indoor:W,next:M,weather:S,date:S,clock:M,indoor:M", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "indoor:W,next:M,weather:S,date:S,clock:M,indoor:M");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-wide.pbm");
 
-    widgetData.widgetCount = layoutWidgets("claude:L,claude:M,claude:S,clock:S,price:M,indoor:S,co2:S", widgetData.widgets, MAX_WIDGETS);
+    // Home, Calendar and three widget pages: the dots show the second widget
+    // page, 4th of 5; then the empty third widget page
+    setWidgets(widgetData,
+               "@home|clock:M,date:M,weather:W,next:W|@calendar|indoor:W,next:M,weather:S,date:S,clock:M,indoor:M|");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData, 1);
+    savePbm(canvas, "out/home2-pages.pbm");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData, 2);
+    savePbm(canvas, "out/home2-pages-empty.pbm");
+
+    setWidgets(widgetData, "claude:L,claude:M,claude:S,clock:S,price:M,indoor:S,co2:S");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-claude.pbm");
@@ -459,27 +1380,91 @@ int main() {
     savePbm(canvas, "out/electricity-tomorrow.pbm");
 
     // Electricity widget in every size; and the menu with the price
-    widgetData.widgetCount = layoutWidgets("price:L,price:M,price:S,date:S,clock:W", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "price:L,price:M,price:S,date:S,clock:W");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-price.pbm");
-    widgetData.widgetCount = layoutWidgets("price:W,claude:M,co2:S,date:S,next:M,clock:M", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "price:W,claude:M,co2:S,date:S,next:M,clock:M");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-price-wide.pbm");
 
+    // GitHub in every size; then without a token, and loading
+    static AppData githubData;  // Large because of the event list
+    githubData = widgetData;
+    loadDemoGitHub(githubData);
+    setWidgets(githubData, "github:W,github:L,github:M,github:S");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, githubData);
+    savePbm(canvas, "out/home2-github.pbm");
+    setWidgets(githubData, "github:M,github:S,github:S,github:W");
+    githubData.githubTokenSet = false;
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, githubData);
+    savePbm(canvas, "out/home2-github-none.pbm");
+    githubData.githubTokenSet = true;
+    githubData.githubValid = false;
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, githubData);
+    savePbm(canvas, "out/home2-github-loading.pbm");
+    githubData.githubTokenRefused = true;
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, githubData);
+    savePbm(canvas, "out/home2-github-refused.pbm");
+
+    // Weather in every size: large and wide add feels like, wind, sunrise, sunset
+    AppData weatherData = widgetData;
+    setWidgets(weatherData, "weather:L,weather:M,weather:S,weather:W");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, weatherData);
+    savePbm(canvas, "out/home2-weather.pbm");
+
+    // Calm, polar night (no sunrise or sunset) and a long city name; then no weather yet
+    weatherData.windSpeed = 0.3f;
+    weatherData.windDeg = -1;
+    weatherData.sunrise = weatherData.sunset = 0;
+    weatherData.outdoorTemp = -24;
+    weatherData.feelsLike = -31;
+    strcpy(weatherData.city, "Kilpisjarvi, Enontekio");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, weatherData);
+    savePbm(canvas, "out/home2-weather-polar.pbm");
+    weatherData.weatherValid = false;
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, weatherData);
+    savePbm(canvas, "out/home2-weather-none.pbm");
+
+    // Clear night (moon) in every size, with rain on Home
+    AppData nightData = widgetData;
+    nightData.weatherCode = 800;
+    nightData.epoch = nightData.sunset + 3 * 3600;
+    setWidgets(nightData, "weather:L,weather:M,weather:S,weather:W");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, nightData);
+    savePbm(canvas, "out/home2-weather-night.pbm");
+
+    // Every weather icon with its name, for checking them by eye
+    canvas.fillScreen(COLOR_BG);
+    for (int i = 0; i < int(WeatherIcon::COUNT); i++) {
+        int16_t x = 9 + (i % 5) * 158;
+        int16_t y = 8 + (i / 5) * 158;
+        drawWeatherIcon(canvas, x, y, WeatherIcon(i));
+        Components::drawText(canvas, x, y + 124, weatherIconName(WeatherIcon(i)), FONT_SMALL);
+    }
+    savePbm(canvas, "out/weather-icons.pbm");
+
     // Old numbers and no numbers yet
     widgetData.claudeUpdated = widgetData.epoch - 95 * 60;
-    widgetData.widgetCount = layoutWidgets("claude:W,claude:M,claude:S,clock:S", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "claude:W,claude:M,claude:S,clock:S");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     widgetData.claudeValid = false;
     savePbm(canvas, "out/home2-claude-old.pbm");
-    widgetData.widgetCount = layoutWidgets("claude:W,claude:M,claude:S", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "claude:W,claude:M,claude:S");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-claude-none.pbm");
 
     printf("Saved all pages (.pbm) in out/\n");
-    return 0;
+    return checksFailed > 0 ? 1 : 0;
 }

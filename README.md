@@ -47,6 +47,16 @@ When a task is completed, close the related Issue.
 └── meetings/          # Meeting notes and decisions
 ```
 
+## Checks
+
+`tools/ui-preview/build.sh` builds the UI on the computer, runs the checks (parsers, layout, prices, dates,
+buttons, Pomodoro...) and saves every page as a picture in `tools/ui-preview/out/`.
+The checks also run on every firmware build, just before linking (`tools/run_checks.py`):
+
+- If a check fails, the build stops and nothing is uploaded. The output names each failed check.
+- They need `sh` and `g++`; on a computer without them (e.g. Windows without Git Bash) they are skipped with a warning.
+- `SKIP_CHECKS=1 pio run` builds once without them.
+
 ## Project Timeline
 
 | Milestone               | Deadline |
@@ -79,27 +89,104 @@ Everything else is on the settings page below.
 
 With the phone on the same Wi-Fi, open `http://desk.local` (or the IP / QR code from menu → Settings):
 
-- **Widgets** of the second home page (see below)
+- **Pages**: the pages the touch button goes through; add, remove and arrange them (see below)
 - **Weather city**: search by name (OpenWeatherMap geocoding, uses `WEATHER_API_KEY`) and pick one of the matches
 - **Calendar link**
 - **Wi-Fi**: switch to another network. If the new one doesn't work within ~20 s, the display goes back to the old one.
 
+There is no login: anyone on the same Wi-Fi can open the page. Other web sites can't use it through your browser
+(the forms need a token from the page itself), and the saved calendar link is never shown again.
 All settings are kept in the ESP32's flash (`src/app/Settings.cpp`), not in the code.
 Only 2.4 GHz networks work; WPA2-Enterprise networks such as eduroam are not supported.
+No page waits for slow work, so the screen and the knob keep working:
+- The Wi-Fi scan runs in the background, and the page shows "Looking for networks..." meanwhile.
+- The city search runs in the download task, and the page asks again until the answer is there.
+
+The style of all pages is one file, `src/web/style.css`. At build time `tools/web_assets.py` gzips it into
+the firmware (about 1.6 KB). Browsers keep it, so it is sent only once.
 Code: `src/services/SetupPortal.cpp` (setup Wi-Fi, web page), `src/ui/pages/SetupPage.cpp` (screen).
 
-## Second home page (widgets)
+## Pages
 
-The touch button switches between the normal Home page and a second page made of widgets.
+The touch button goes through a list of pages in order, then back to the first. The list is set on the settings page
+(`http://desk.local` → Pages). It can hold:
+- **Dedicated pages**, each at most once. Their layout is fixed:
+  - **Home**: clock, weather, indoor, next event;
+  - **Calendar**;
+  - **Electricity**;
+  - **Music**;
+  - **Pomodoro**.
+- Up to 5 **widget pages** that you arrange yourself.
+
+The default list is Home and one widget page.
+
+On the settings page the pages are a numbered list, in the order the touch button shows them:
+- Tap a page to open it; the arrows on the open page move it up or down in the list.
+- **Add page** offers a widget page and the dedicated pages that aren't in the list yet.
+- **Remove this page** takes the open page out; one page always stays.
+- A dedicated page only shows what it does, its layout is fixed.
+- A widget page shows a preview: drag widgets to reorder them, or tap one to resize it, move it, remove it or send it
+  to another widget page. **+ Add widget** opens the list of widgets.
+- Removing Home is fine: waking up and going back then open the first page of the list.
+
+On the device, each page keeps its own controls. For example, on the Calendar the knob changes the day, and on a
+widget page it switches widget pages. Pages that aren't in the list stay in the menu. A tap on a page that isn't in
+the list (the menu, for example) opens the first page. Holding the touch button on any page of the list turns the
+device off.
+
+On widget pages, dots at the bottom show where the page is in the whole list.
+
+The serial monitor shows every tap and the page it opens (`Touch: tap (120 ms)`, `Screen: page 3 of 5, Calendar`).
+A touch shorter than 30 ms is a spike, e.g. from the E-Ink's power, not a finger, and it is ignored
+(`Touch: ignored a 4 ms spike`). Otherwise such spikes could skip pages.
+
+The list is saved as one text, pages separated by `|`, dedicated pages starting with `@`:
+`@home|clock:L,date:S|@calendar|github:W,price:M` (`src/app/WidgetLayout.*`, NVS key `pages`).
+A layout saved by an older version is read as before.
+
+The system screens are not in the list: the menu, Settings (address and QR code), the Wi-Fi setup, sleep and
+"Turned off".
+
+**Turning off**: on a page of the list, hold the touch button for 3 seconds. The screen shows "Turned off" with the time,
+and once you lift your finger the device goes into deep sleep (Wi-Fi, CO2 sensor and screen off; E-Ink keeps the page without power).
+Touch the button again to turn it on: Home comes back within a few seconds, with the clock right away
+(the ESP32 keeps the time while off), and weather, indoor values and events follow as they arrive.
+The Wi-Fi connects straight to the router and channel it used last time, without scanning every channel.
+Downloads run in a task of their own (`src/services/Downloader.*`), so the controls never wait for the network.
+Code: `powerOff()` and the touch handling in `handleInput()` in `src/main.cpp` (tap or hold: `src/app/PressGesture.h`), `src/ui/pages/PowerOffPage.cpp`.
+A tap now acts when the finger is lifted (so a hold isn't also a tap).
 Its layout is edited on the settings page (`http://desk.local` → Widgets).
 The editor works like a phone home screen: drag widgets to reorder them, tap one to change its size (Small 1×1, Medium 2×1, Large 2×2, Wide 4×1), move it or remove it, and add new ones.
 Widgets: clock, date, weather, indoor (temperature, humidity, CO2), CO2, next event, today's events, Claude usage, electricity price.
+The large and wide weather widgets also show feels like, wind (m/s and where it comes from), sunrise and sunset,
+all from the same OpenWeatherMap request.
+The weather icon (Home and the medium, large and wide widgets) comes from the weather code. There are 14 icons:
+- clear, few clouds, clouds, overcast;
+- drizzle, rain, heavy rain, thunderstorm, snow, sleet;
+- mist, wind;
+- a moon instead of the sun between sunset and sunrise.
+
+Code: `src/ui/WeatherIcons.cpp`; `tools/ui-preview/out/weather-icons.png` shows them all.
 
 **Claude widget**: how much of your Claude plan's 5-hour session and weekly limit is used, with reset times.
 Claude has no official API for this, so a small Chrome extension reads it in your logged-in browser and sends
-only the numbers to the display (`POST /claude`). Setup: `tools/claude-usage-extension/README.md`.
+only the numbers to the display (`POST /claude`). Setup: `tools/desk-extension/README.md`.
 
 **Electricity widget**: the spot price now and whether it is cheap; bigger sizes add the day's chart and the cheapest 3 hours.
+
+**Now playing widget** and the **Music** page (menu → Music): what YouTube Music plays in your browser, with the time into the song (the Music page also has a progress bar),
+sent by the same Chrome extension (`POST /music`). Setup: `tools/desk-extension/README.md`.
+Song titles are made plain ASCII on the device (`src/app/PlainText.*`): accents dropped, Cyrillic in Latin letters,
+emoji left out.
+Code: `src/services/NowPlaying.*` (message), `src/app/MusicData.h`, `src/ui/pages/MusicPage.cpp`, `drawMusic()` in `src/ui/pages/WidgetPage.cpp`.
+
+**GitHub widget**: your contribution graph of the last year, like on your GitHub profile (a column per week, Sunday at the top).
+The screen has no greens, so busier days are bigger black squares and days without contributions are small dots.
+Next to it: contributions today, in the last year, and the current streak (the large size shows the last two as big numbers).
+It needs a GitHub personal access token: github.com → Settings → Developer settings → Personal access tokens.
+A fine-grained token without any permissions is enough (public contributions); paste it on the settings page (`desk.local`),
+or set `GITHUB_TOKEN` in `.env.local`. The GraphQL API is asked every 30 minutes.
+Code: `src/services/GitHubService.cpp` (download), `GitHubParser.cpp` (answer), `src/app/GitHubData.h`, `drawGitHub()` in `src/ui/pages/WidgetPage.cpp`.
 
 The whole screen is a 4 × 3 grid of widgets (no clock header or hint footer), with lines between them like on Home.
 Widgets are placed in order in the first free spot, so the ones that don't fit are shown on the phone as "doesn't fit".
@@ -111,13 +198,17 @@ The device reads any calendar that has an iCal (`.ics` / `webcal://`) link: Tuud
 
 1. Get the link. Tuudo: the calendar sync link. Google: Settings → your calendar → "Secret address in iCal format".
 2. Paste it on the settings page (`desk.local`). Keep it private: anyone with the link can read the calendar.
+   After saving, the page only shows the link's site; leave the field empty to keep it.
    `CALENDAR_ICS_URL` in `.env.local` is only used until a link is saved there.
 3. The calendar is downloaded every 30 minutes, and when you hold the knob on the Home page.
 
-Open it with the touch button, or from the menu → Calendar. It shows today's events; turn the knob for the next or previous day. Press opens the menu, hold goes back to Home.
+Open it from the menu → Calendar. The day view shows the month with a dot on days that have events, and the events of the chosen day;
+the week view shows seven columns. Turn the knob for the next or previous day (week in the week view), press to switch between the two views,
+hold to go back to Home.
 
-The parser (`src/services/CalendarService.cpp`) keeps events from this week's Monday to 8 weeks ahead (at most 200); the weeks after this one are used for the next event on Home.
+The parser (`src/services/IcsParser.cpp`, download in `CalendarService.cpp`) keeps events from this week's Monday to 8 weeks ahead (at most 200); the weeks after this one are used for the next event on Home.
 It handles recurring events, excluded dates, moved or cancelled occurrences and all-day events.
+If a feed has more than that (or more than 48 recurring events), the days that may be missing events show "Too many events" instead of looking free.
 Times with a time zone are read as Finnish time, and titles are cut before course codes ("IoT Project 1 IT24SP (IT00BD93-3002)/ ..." becomes "IoT Project 1 IT24SP").
 
 ## Electricity price
@@ -131,7 +222,7 @@ Turn the knob for tomorrow: the prices for tomorrow come out in the afternoon (a
 Press opens the menu, hold goes back to Home. It can also be added as a widget (see above).
 
 The API allows only one request a minute per IP; too many give HTTP 429 and can block the IP for a while.
-So the device asks rarely (`updatePrices()` in `src/main.cpp`): every 6 hours, every 30 minutes after 14:00 until tomorrow's prices are there,
+So the device asks rarely (`pricesInterval()` in `src/app/FetchSchedule.h`): every 6 hours, every 30 minutes after 14:00 until tomorrow's prices are there,
 every 5 minutes while today's prices are missing, and never more often than every 2 minutes (also when you hold to refresh).
 Code: `src/services/ElectricityService.*` (download), `src/app/ElectricityData.h` (price now, daily stats, cheapest hours),
 `src/ui/pages/ElectricityPage.cpp` (page).

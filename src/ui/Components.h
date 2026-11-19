@@ -65,6 +65,8 @@ void drawCloudIcon(Adafruit_GFX& gfx, int16_t x, int16_t y,
                    int16_t width = 142);                             // 142x84 at default width
 void drawCalendarIcon(Adafruit_GFX& gfx, int16_t x, int16_t y,
                       bool check = false);                          // 46x50
+// Two beamed notes in a size x size square; outlined when nothing plays
+void drawMusicIcon(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t size, bool filled);
 
 // Clock, date, status icons and the line below them
 void drawHeader(Adafruit_GFX& gfx, const AppData& data);

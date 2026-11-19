@@ -2,10 +2,11 @@
 
 #include <ESPmDNS.h>
 #include <WiFi.h>
+#include <esp_random.h>
 #include <qrcode.h>
 
 #include "../app/WidgetLayout.h"
-#include "WeatherService.h"
+#include "WebAssets.h"  // Made at build time by tools/web_assets.py
 
 namespace {
 
@@ -31,6 +32,29 @@ String htmlEscape(const String& text) {
     return out;
 }
 
+// 16 hex digits, new at every start
+String makeToken() {
+    char text[17];
+    snprintf(text, sizeof(text), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+    return text;
+}
+
+// The calendar is downloaded over HTTPS; webcal:// is the same
+bool isCalendarLink(const String& link) {
+    return link.startsWith("webcal://") || link.startsWith("https://");
+}
+
+// "https://calendar.google.com/calendar/ical/.../basic.ics" -> "calendar.google.com".
+// The rest of the link is the secret part, so pages only show this.
+String linkHost(const String& link) {
+    int start = link.indexOf("://");
+    start = start < 0 ? 0 : start + 3;
+    int end = link.indexOf('/', start);
+    String host = link.substring(start, end < 0 ? link.length() : end);
+    int at = host.lastIndexOf('@');  // No user name or password either
+    return at < 0 ? host : host.substring(at + 1);
+}
+
 // Special characters in Wi-Fi QR codes need a backslash
 String qrEscape(const String& text) {
     String out;
@@ -44,80 +68,7 @@ String qrEscape(const String& text) {
     return out;
 }
 
-// Everything is inline: the setup Wi-Fi has no internet for fonts or images
-const char* const PAGE_STYLE =
-    ":root{--fg:#111;--muted:#737373;--line:#e6e6e3;--bg:#f5f5f2;--card:#fff}"
-    "@media(prefers-color-scheme:dark){:root{--fg:#f2f2f2;--muted:#999;--line:#2e2e2e;--bg:#101010;--card:#1b1b1b}}"
-    "*{box-sizing:border-box}"
-    "body{margin:0;background:var(--bg);color:var(--fg);"
-    "font:16px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;-webkit-text-size-adjust:100%}"
-    "main{max-width:440px;margin:0 auto;padding:32px 18px 40px}"
-    ".logo{width:46px;height:32px;border:2.5px solid var(--fg);border-radius:7px;position:relative;margin-bottom:20px}"
-    ".logo:after{content:'';position:absolute;left:8px;right:14px;top:8px;height:3px;border-radius:2px;"
-    "background:var(--fg);box-shadow:0 7px 0 var(--fg)}"
-    "h1{font-size:27px;line-height:1.2;letter-spacing:-.02em;margin:0 0 6px}"
-    ".sub{color:var(--muted);margin:0 0 28px}"
-    ".head{display:flex;justify-content:space-between;align-items:baseline;margin:0 4px 8px;"
-    "font-size:13px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}"
-    ".head a{color:var(--fg);text-decoration:none;text-transform:none;letter-spacing:0;font-weight:500;font-size:15px}"
-    ".card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:24px}"
-    ".net{display:flex;align-items:center;gap:12px;padding:14px 16px;border-top:1px solid var(--line);cursor:pointer}"
-    ".net:first-child{border-top:0}"
-    ".net input{-webkit-appearance:none;appearance:none;flex:none;width:20px;height:20px;margin:0;"
-    "border:2px solid var(--line);border-radius:50%}"
-    ".net input:checked{border:6px solid var(--fg)}"
-    ".name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-    ".meta{display:flex;align-items:center;gap:9px;color:var(--muted)}"
-    ".bars{display:flex;align-items:flex-end;gap:2px;height:14px}"
-    ".bars i{width:3px;border-radius:1px;background:var(--line)}"
-    ".bars i:nth-child(1){height:4px}.bars i:nth-child(2){height:7px}"
-    ".bars i:nth-child(3){height:10px}.bars i:nth-child(4){height:14px}"
-    ".s1 i:nth-child(-n+1),.s2 i:nth-child(-n+2),.s3 i:nth-child(-n+3),.s4 i{background:var(--fg)}"
-    ".field{display:block;width:100%;padding:15px 16px;border:0;background:transparent;color:var(--fg);"
-    "font:inherit;outline:none}"
-    ".field::placeholder{color:var(--muted)}"
-    ".other{border-top:1px solid var(--line)}"
-    "form:has(#o:not(:checked)) .other{display:none}"
-    ".pw{display:flex;align-items:center}"
-    ".pw button{background:none;border:0;color:var(--muted);font:inherit;font-size:15px;padding:0 16px;cursor:pointer}"
-    ".note{color:var(--muted);font-size:13px;margin:-16px 4px 24px}"
-    ".btn{display:block;width:100%;padding:17px;border:0;border-radius:12px;background:var(--fg);color:var(--bg);"
-    "font:inherit;font-size:17px;font-weight:600;text-align:center;text-decoration:none;cursor:pointer}"
-    ".btn:disabled{opacity:.6}"
-    ".foot{color:var(--muted);font-size:13px;text-align:center;margin-top:14px}"
-    ".status{text-align:center;padding-top:56px}"
-    ".status .sub{margin-bottom:32px}"
-    ".sub b{color:var(--fg)}"
-    ".icon{width:68px;height:68px;margin:0 auto 24px;border:2.5px solid var(--fg);border-radius:50%;"
-    "display:flex;align-items:center;justify-content:center}"
-    ".spin{border-color:var(--line);border-top-color:var(--fg);animation:r .9s linear infinite}"
-    "@keyframes r{to{transform:rotate(360deg)}}"
-    ".row{display:flex;justify-content:space-between;padding:15px 16px;color:var(--fg);text-decoration:none}"
-    ".row span+span{color:var(--muted)}"
-    ".screen{position:relative;height:0;padding-top:60%;background:var(--card);border:1px solid var(--line);"
-    "border-radius:14px;margin-bottom:14px;user-select:none;-webkit-user-select:none}"
-    ".grid{position:absolute;left:2%;right:2%;top:3.3%;height:93.4%}"
-    ".tile{position:absolute;display:flex;flex-direction:column;justify-content:space-between;padding:6px 8px;"
-    "border:2px solid var(--fg);border-radius:8px;background:var(--card);font-size:12px;font-weight:600;"
-    "line-height:1.2;overflow:hidden;cursor:grab;touch-action:none}"
-    ".tile small{font-weight:500;color:var(--muted)}"
-    ".tile.sel{background:var(--fg);color:var(--bg)}.tile.sel small{color:var(--bg);opacity:.7}"
-    ".tile.drag{z-index:2;opacity:.9;box-shadow:0 10px 28px rgba(0,0,0,.25)}"
-    ".chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px}"
-    ".chip{border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--fg);"
-    "padding:9px 14px;font:inherit;font-size:15px;cursor:pointer}"
-    ".chip.on{background:var(--fg);border-color:var(--fg);color:var(--bg)}"
-    ".chip:disabled{opacity:.35}"
-    ".chip.out{border-style:dashed;color:var(--muted)}.chip.out.on{color:var(--bg)}"
-    ".hint{color:var(--muted);font-size:14px;margin:0 4px 22px}"
-    ".foot a{color:var(--fg)}"
-    ".back{display:inline-block;color:var(--muted);text-decoration:none;margin-bottom:18px}"
-    ".toast{background:var(--fg);color:var(--bg);border-radius:12px;padding:12px 16px;margin:-8px 0 24px;"
-    "font-weight:600}"
-    ".search{display:flex;align-items:center;border-top:1px solid var(--line)}"
-    ".search button{background:none;border:0;color:var(--fg);font:inherit;font-weight:600;padding:0 16px;"
-    "cursor:pointer}"
-    "[data-k]{display:none}";
+// The style of the pages is src/web/style.css, served at /style.css (handleStyle)
 
 // Small inline icons
 const char* const ICON_LOCK =
@@ -136,6 +87,9 @@ const char* const ICON_CROSS =
 
 void SetupPortal::begin(Settings& s) {
     settings = &s;
+    if (formToken.length() == 0) {
+        formToken = makeToken();
+    }
 
     // The home-network server restarts below on the setup Wi-Fi
     if (lanOn) {
@@ -158,7 +112,7 @@ void SetupPortal::begin(Settings& s) {
     delay(100);
 
     // Look for networks before the setup Wi-Fi is on: that works best
-    scan();
+    scanNow();
 
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAPConfig(AP_IP, AP_IP, IPAddress(255, 255, 255, 0));
@@ -179,7 +133,12 @@ void SetupPortal::addRoutes() {
     if (routesAdded) {
         return;
     }
+    // Read by handleClaude()
+    static const char* headers[] = {"Origin", "Content-Type"};
+    server.collectHeaders(headers, 2);
+
     server.on("/", HTTP_GET, [this]() { handleRoot(); });
+    server.on("/style.css", HTTP_GET, [this]() { handleStyle(); });
     server.on("/save", HTTP_POST, [this]() { handleSave(); });
     server.on("/status", HTTP_GET, [this]() { handleStatus(); });
     server.on("/scan", HTTP_GET, [this]() { handleScan(); });
@@ -191,7 +150,9 @@ void SetupPortal::addRoutes() {
     server.on("/wifi", HTTP_POST, [this]() { handleWifiSave(); });
     server.on("/wifistatus", HTTP_GET, [this]() { handleWifiStatus(); });
     server.on("/claude", HTTP_POST, [this]() { handleClaude(); });
-    server.on("/claude", HTTP_OPTIONS, [this]() { handleClaudePreflight(); });
+    server.on("/claude", HTTP_OPTIONS, [this]() { handleExtensionPreflight(); });
+    server.on("/music", HTTP_POST, [this]() { handleMusic(); });
+    server.on("/music", HTTP_OPTIONS, [this]() { handleExtensionPreflight(); });
     // Phones check e.g. /generate_204 or /hotspot-detect.html: send them to the page
     server.onNotFound([this]() { redirectToRoot(); });
     routesAdded = true;
@@ -202,6 +163,9 @@ void SetupPortal::startLan(Settings& s) {
         return;
     }
     settings = &s;
+    if (formToken.length() == 0) {
+        formToken = makeToken();
+    }
     addRoutes();
     server.begin();
     if (MDNS.begin("desk")) {
@@ -220,6 +184,7 @@ static bool takeFlag(bool& flag) {
 bool SetupPortal::takeWidgetsChanged() { return takeFlag(widgetsChanged); }
 bool SetupPortal::takeCityChanged() { return takeFlag(cityChanged); }
 bool SetupPortal::takeCalendarChanged() { return takeFlag(calendarChanged); }
+bool SetupPortal::takeGithubChanged() { return takeFlag(githubChanged); }
 bool SetupPortal::takeWifiChanged() { return takeFlag(wifiChanged); }
 
 bool SetupPortal::takeClaudeUsage(ClaudeUsage& usage) {
@@ -229,6 +194,30 @@ bool SetupPortal::takeClaudeUsage(ClaudeUsage& usage) {
     usage = claudeUsage;
     claudeReceived = false;
     return true;
+}
+
+bool SetupPortal::takeNowPlaying(NowPlaying& song) {
+    if (!nowPlayingReceived) {
+        return false;
+    }
+    song = nowPlaying;
+    nowPlayingReceived = false;
+    return true;
+}
+
+bool SetupPortal::takeCitySearch(String& query) {
+    if (!cityQueryNew) {
+        return false;
+    }
+    query = cityQuery;
+    cityQueryNew = false;
+    return true;
+}
+
+void SetupPortal::citySearchDone(const String& query, bool ok, const String& json) {
+    cityResultQuery = query;
+    cityResultOk = ok;
+    cityResultJson = ok ? json : String("[]");
 }
 
 void SetupPortal::restartMdns() {
@@ -292,12 +281,14 @@ void SetupPortal::loop() {
     if (state == State::OFF) {
         if (lanOn) {
             server.handleClient();  // Settings pages on the home Wi-Fi
+            pollScan();
             loopSwitch();
         }
         return;
     }
     dns.processNextRequest();
     server.handleClient();
+    pollScan();
 
     switch (state) {
         case State::WAITING:
@@ -382,19 +373,58 @@ void SetupPortal::loopSwitch() {
 // ---------- Wi-Fi scan ----------
 
 // Look for networks and wait for the result (2-4 s)
-void SetupPortal::scan() {
-    unsigned long start = millis();
+void SetupPortal::scanNow() {
+    scanStart = millis();
     WiFi.scanDelete();
     int16_t found = WiFi.scanNetworks(false, false, false, 300);
     if (found < 0) {
-        // Usually busy with a connection attempt: stop it and try once more
+        // Usually busy with a connection attempt, which can be stopped here
         Serial.printf("Setup: Wi-Fi scan failed (%d), trying again\n", found);
         WiFi.disconnect();
         delay(200);
         found = WiFi.scanNetworks(false, false, false, 300);
     }
+    readScan(found);
+}
+
+void SetupPortal::startScan(bool onHomeWifi) {
+    if (scanning) {
+        return;
+    }
+    scanStart = millis();
+    WiFi.scanDelete();
+    int16_t result = WiFi.scanNetworks(true, false, false, 300);
+    if (result == WIFI_SCAN_FAILED && !onHomeWifi) {
+        // Usually busy with a connection attempt. During setup it can be
+        // stopped; on the home Wi-Fi that would drop the page being served.
+        Serial.println("Setup: Wi-Fi scan failed, trying again");
+        WiFi.disconnect();
+        delay(200);
+        result = WiFi.scanNetworks(true, false, false, 300);
+    }
+    if (result == WIFI_SCAN_FAILED) {
+        readScan(result);  // Keeps the old list, pages don't wait
+        return;
+    }
+    scanning = true;
+}
+
+void SetupPortal::pollScan() {
+    if (!scanning) {
+        return;
+    }
+    int16_t found = WiFi.scanComplete();
+    if (found == WIFI_SCAN_RUNNING) {
+        return;
+    }
+    scanning = false;
+    readScan(found);
+}
+
+void SetupPortal::readScan(int found) {
+    scannedAt = millis();  // Also after a failure: pages show the old list, no new try at once
     if (found < 0) {
-        Serial.printf("Setup: Wi-Fi scan failed again (%d)\n", found);
+        Serial.printf("Setup: Wi-Fi scan failed (%d)\n", found);
         WiFi.scanDelete();
         return;  // Keep the old list
     }
@@ -432,31 +462,59 @@ void SetupPortal::scan() {
         }
     }
     WiFi.scanDelete();
-    Serial.printf("Setup: found %d networks in %lu ms\n", networkCount, millis() - start);
+    Serial.printf("Setup: found %d networks in %lu ms\n", networkCount, millis() - scanStart);
 }
 
 // ---------- Web pages ----------
 
-void SetupPortal::sendPage(const String& body, int refreshSeconds) {
+void SetupPortal::sendPage(const String& body, int refreshSeconds, const char* refreshUrl) {
     String html;
-    html.reserve(body.length() + 3600);
+    html.reserve(body.length() + 400);
     html += "<!DOCTYPE html><html><head><meta charset=utf-8>"
             "<meta name=viewport content=\"width=device-width,initial-scale=1\">";
     if (refreshSeconds > 0) {
-        html += "<meta http-equiv=refresh content=\"" + String(refreshSeconds) + ";url=/status\">";
+        html += "<meta http-equiv=refresh content=\"" + String(refreshSeconds) + ";url=" + refreshUrl + "\">";
     }
-    html += "<title>Desk setup</title><style>";
-    html += PAGE_STYLE;
-    html += "</style></head><body><main>";
+    // The version changes with the style, so browsers never keep an old one
+    html += "<title>Desk setup</title><link rel=stylesheet href=\"/style.css?v=";
+    html += STYLE_CSS_VERSION;
+    html += "\"></head><body><main>";
     html += body;
     html += "</main></body></html>";
     server.sendHeader("Cache-Control", "no-store");
+    server.sendHeader("X-Frame-Options", "DENY");  // Other sites can't show the forms inside theirs
     server.send(200, "text/html", html);
+}
+
+// Gzipped in the firmware (tools/web_assets.py). Every page links it with the
+// style's version, so browsers may keep it for good: it is sent once.
+void SetupPortal::handleStyle() {
+    server.sendHeader("Cache-Control", "public, max-age=31536000, immutable");
+    server.sendHeader("Content-Encoding", "gzip");
+    server.send_P(200, "text/css", reinterpret_cast<const char*>(STYLE_CSS_GZ), STYLE_CSS_GZ_LEN);
+}
+
+void SetupPortal::sendScanning(const char* url) {
+    sendStatusPage(nullptr, "Looking for networks...", "This takes a few seconds.", "", 1, url);
+}
+
+String SetupPortal::tokenField() const {
+    return "<input type=hidden name=t value=" + formToken + ">";
+}
+
+bool SetupPortal::validToken() {
+    return formToken.length() > 0 && server.arg("t") == formToken;
+}
+
+// After a restart the token is new, so an old page lands here too
+void SetupPortal::sendExpired() {
+    Serial.println("Web: form without a valid token, ignored");
+    sendStatusPage(ICON_CROSS, "Page expired", "Open the page again and try once more.", "Back");
 }
 
 // Centered result page: icon, title, text and an optional button
 void SetupPortal::sendStatusPage(const char* icon, const String& title, const String& text,
-                                 const String& button, int refreshSeconds) {
+                                 const String& button, int refreshSeconds, const char* refreshUrl) {
     String body = "<div class=status><div class=\"icon";
     body += icon == nullptr ? " spin\">" : "\">";
     if (icon != nullptr) {
@@ -467,7 +525,7 @@ void SetupPortal::sendStatusPage(const char* icon, const String& title, const St
         body += "<a class=btn href=/>" + button + "</a>";
     }
     body += "</div>";
-    sendPage(body, refreshSeconds);
+    sendPage(body, refreshSeconds, refreshUrl);
 }
 
 void SetupPortal::redirectToRoot() {
@@ -483,10 +541,15 @@ void SetupPortal::handleRoot() {
     }
 
     // First setup: Wi-Fi only, everything else is on desk.local afterwards
+    if (scanning) {
+        sendScanning("/");  // "Refresh" was tapped
+        return;
+    }
     String body;
     body.reserve(2000 + networkCount * 420);
     body += "<div class=logo></div><h1>Desk setup</h1><p class=sub>Connect your display to Wi-Fi.</p>";
     body += "<form method=post action=/save onsubmit=\"b.disabled=true;b.textContent='Connecting...'\">";
+    body += tokenField();
     // Selected: the saved network, or the strongest one
     String preselect = settings->hasWifi() || networkCount == 0 ? settings->wifiSsid : networks[0].ssid;
     body += wifiFields(preselect, "/scan");
@@ -578,7 +641,7 @@ void SetupPortal::handleScan() {
         return;
     }
     if (state != State::CONNECTING) {
-        scan();  // The page waits a few seconds for the result
+        startScan(false);  // The page shows a spinner until the list is ready
     }
     redirectToRoot();
 }
@@ -586,6 +649,10 @@ void SetupPortal::handleScan() {
 void SetupPortal::handleSave() {
     if (state == State::OFF) {
         redirectToRoot();  // At home the Wi-Fi is changed on /wifi
+        return;
+    }
+    if (!validToken()) {
+        sendExpired();
         return;
     }
     String ssid, password;
@@ -628,48 +695,108 @@ void SetupPortal::handleStatus() {
     }
 }
 
-// ---------- Widget editor (second home page) ----------
+// ---------- Page editor (the touch button's pages) ----------
 
 namespace {
 
-// Phone-side editor: preview in the device's proportions, drag to reorder,
-// tap to select, size / move / remove buttons. Placement is the same as in
+// Each dedicated page: one line for the list, and what it does on the device
+const char* const PAGE_SUMMARIES[PAGE_KIND_COUNT] = {
+    "",
+    "Clock, weather, indoor, next event",
+    "Your events by day or week",
+    "Spot price, today and tomorrow",
+    "What YouTube Music plays",
+    "Focus timer",
+};
+const char* const PAGE_DESCRIPTIONS[PAGE_KIND_COUNT] = {
+    "",
+    "Its layout is fixed. Hold the knob to refresh the weather.",
+    "Its layout is fixed. Turn the knob for the next day, press it for the week.",
+    "Its layout is fixed. Turn the knob for tomorrow's prices.",
+    "Its layout is fixed. Needs the browser extension.",
+    "Its layout is fixed. Press the knob to start or pause, turn it to set the minutes.",
+};
+
+// Phone-side editor: a numbered list of the pages in the device's order
+// (tap one to open it, arrows move it, "Add page" offers what isn't in the
+// list yet), and the open page below. A widget page shows a preview in the
+// device's proportions: drag to reorder, tap to select, size / move /
+// remove / other page buttons; the widget catalog opens on "+ Add widget".
+// G holds every page: a dedicated page has f (its code), a widget page w
+// (its widgets); L is the open page's widgets. Placement is the same as in
 // WidgetLayout.cpp (first free spot, row by row, 4 x 3 cells).
 const char* const EDITOR_SCRIPT = R"JS(
 var SZ={S:[1,1],M:[2,1],L:[2,2],W:[4,1]},SN={S:"Small",M:"Medium",L:"Large",W:"Wide"};
-var L=parse(CUR),sel=-1,dirty=false;
+var G=read(CUR),cur=0,L=[],sel=-1,dirty=false,adding=false,catalog=false;
 function $(i){return document.getElementById(i)}
 function name(c){for(var i=0;i<CAT.length;i++)if(CAT[i][0]==c)return CAT[i][1];return""}
+function fix(c){for(var i=0;i<FIX.length;i++)if(FIX[i][0]==c)return FIX[i];return null}
 function parse(t){var a=[];t.split(",").forEach(function(p){var k=p.split(":");
  if(k.length==2&&name(k[0])&&SZ[k[1]])a.push({t:k[0],s:k[1]})});return a.slice(0,12)}
-function ser(){return L.map(function(w){return w.t+":"+w.s}).join(",")}
+function read(t){var g=[];t.split("|").forEach(function(p){
+  if(p.charAt(0)=="@"){if(fix(p.slice(1)))g.push({f:p.slice(1)})}else g.push({w:parse(p)})});
+ return g.length?g:[{w:[]}]}
+function ser(){return G.map(function(p){return p.f?"@"+p.f:p.w.map(function(w){return w.t+":"+w.s}).join(",")}).join("|")}
+function grids(){return G.filter(function(p){return !p.f}).length}
+function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
+function chip(text,on,click){var b=el("button","chip"+(on?" on":""),text);b.type="button";b.onclick=click;return b}
+function title(p){return p.f?fix(p.f)[1]:"Widgets"}
+function summary(p){if(p.f)return fix(p.f)[2];if(!p.w.length)return"Empty";
+ var n=p.w.slice(0,3).map(function(w){return name(w.t)}).join(", ");return p.w.length>3?n+" +"+(p.w.length-3):n}
+function pick(i){cur=i;L=G[i].f?[]:G[i].w;sel=-1;catalog=false}
+function show(i){pick(i);draw()}
+function list(){var c=$("list");c.innerHTML="";
+ G.forEach(function(p,i){var r=el("div","pg"+(i==cur?" on":""));r.onclick=function(){show(i)};
+  r.appendChild(el("span","n",i+1));var t=el("span","t");t.appendChild(el("b",null,title(p)));
+  t.appendChild(el("small",null,summary(p)));r.appendChild(t);
+  if(i==cur&&G.length>1)[["↑",-1],["↓",1]].forEach(function(a){var b=el("button","ar",a[0]);
+   b.type="button";b.disabled=i+a[1]<0||i+a[1]>=G.length;
+   b.onclick=function(e){e.stopPropagation();movePage(a[1])};r.appendChild(b)});
+  c.appendChild(r)});
+ var a=el("div","pg plus");a.onclick=function(){adding=!adding;draw()};
+ a.appendChild(el("span","n","+"));a.appendChild(el("span","t","Add page"));c.appendChild(a);
+ var o=$("addp");o.innerHTML="";o.style.display=adding?"":"none";
+ if(grids()<MAXP)o.appendChild(chip("Widget page",false,addPage));
+ FIX.forEach(function(f){if(!G.some(function(p){return p.f==f[0]}))o.appendChild(chip(f[1],false,function(){addFixed(f[0])}))});
+ var p=G[cur];$("pname").textContent=(cur+1)+". "+title(p);$("cnt").textContent=p.f?"":L.length+" of 12";
+ $("edit").style.display=p.f?"none":"";$("fixd").style.display=p.f?"":"none";
+ if(p.f)$("fixd").textContent=fix(p.f)[3];
+ $("pdel").disabled=G.length<2;$("cat").style.display=catalog?"":"none";$("addw").style.display=catalog?"none":""}
+function addPage(){if(grids()>=MAXP)return;G.push({w:[]});pick(G.length-1);adding=false;change()}
+function addFixed(c){G.push({f:c});pick(G.length-1);adding=false;change()}
+function delPage(){if(G.length<2||!confirm("Remove page "+(cur+1)+", "+title(G[cur])+"?"))return;
+ G.splice(cur,1);pick(Math.min(cur,G.length-1));change()}
+function movePage(d){var p=G.splice(cur,1)[0];G.splice(cur+d,0,p);pick(cur+d);change()}
+function moveTo(k){if(G[k].w.length>=12)return;G[k].w.push(L.splice(sel,1)[0]);sel=-1;change()}
+function others(){var c=$("mv");c.innerHTML="";
+ G.forEach(function(p,k){if(k==cur||p.f)return;var b=chip("To page "+(k+1),false,function(){moveTo(k)});
+  b.disabled=p.w.length>=12;c.appendChild(b)});c.style.display=c.children.length?"":"none"}
 function place(){var u=[[0,0,0,0],[0,0,0,0],[0,0,0,0]];L.forEach(function(w){var d=SZ[w.s];w.p=null;
  for(var r=0;r+d[1]<=3&&!w.p;r++)for(var c=0;c+d[0]<=4&&!w.p;c++){var ok=1,x,y;
   for(y=r;y<r+d[1];y++)for(x=c;x<c+d[0];x++)if(u[y][x])ok=0;
   if(ok){for(y=r;y<r+d[1];y++)for(x=c;x<c+d[0];x++)u[y][x]=1;w.p=[c,r]}}})}
-function draw(){place();var s=$("scr"),o=$("out");s.innerHTML="";o.innerHTML="";
+function draw(){place();list();var s=$("scr"),o=$("out");s.innerHTML="";o.innerHTML="";
  L.forEach(function(w,i){var d=SZ[w.s];
-  if(w.p){var t=document.createElement("div");
-   t.className="tile"+(i==sel?" sel":"");t.dataset.i=i;
+  if(w.p){var t=el("div","tile"+(i==sel?" sel":""));t.dataset.i=i;
    t.style.left="calc("+w.p[0]*25+"% + 3px)";t.style.top="calc("+w.p[1]*100/3+"% + 3px)";
    t.style.width="calc("+d[0]*25+"% - 6px)";t.style.height="calc("+d[1]*100/3+"% - 6px)";
    t.innerHTML=name(w.t)+"<small>"+SN[w.s]+"</small>";grab(t);s.appendChild(t)}
-  else{var b=document.createElement("button");b.type="button";b.className="chip out"+(i==sel?" on":"");
-   b.textContent=name(w.t)+" · doesn't fit";b.onclick=function(){sel=i;draw()};o.appendChild(b)}});
+  else{var b=chip(name(w.t)+" · doesn't fit",i==sel,function(){sel=i;draw()});b.className+=" out";o.appendChild(b)}});
  o.style.display=o.children.length?"":"none";
- $("tools").style.display=sel>=0?"":"none";$("hint").style.display=sel>=0?"none":"";
+ $("tools").style.display=sel>=0?"":"none";$("hint").style.display=sel>=0||!L.length?"none":"";
  if(sel>=0){$("tname").textContent=name(L[sel].t);
   [].forEach.call(document.querySelectorAll("[data-s]"),function(b){b.className="chip"+(b.getAttribute("data-s")==L[sel].s?" on":"")});
-  $("up").disabled=sel==0;$("dn").disabled=sel==L.length-1}
+  $("up").disabled=sel==0;$("dn").disabled=sel==L.length-1;others()}
  [].forEach.call(document.querySelectorAll("[data-a]"),function(b){b.disabled=L.length>=12});
- $("cnt").textContent=L.length+" of 12";
+ $("addw").disabled=L.length>=12;
  var v=$("save");v.disabled=!dirty;v.textContent=dirty?"Save to display":"Saved"}
 function change(){dirty=true;draw()}
 function size(z){L[sel].s=z;change()}
 function move(d){var w=L.splice(sel,1)[0];sel+=d;L.splice(sel,0,w);change()}
 function del(){L.splice(sel,1);sel=-1;change()}
-function add(c){if(L.length>=12)return;L.push({t:c,s:"S"});sel=L.length-1;change()}
-function reset(){L=parse(DEF);sel=-1;change()}
+function add(c){if(L.length>=12)return;L.push({t:c,s:"S"});sel=L.length-1;catalog=false;change()}
+function reset(){if(!confirm("Back to Home and one page with the default widgets?"))return;
+ G=read(DEF);pick(0);change()}
 function grab(t){t.onpointerdown=function(e){var i=+t.dataset.i,x0=e.clientX,y0=e.clientY,moved=false;
  try{t.setPointerCapture(e.pointerId)}catch(x){}
  t.onpointermove=function(e){var dx=e.clientX-x0,dy=e.clientY-y0;
@@ -684,7 +811,8 @@ function save(){var v=$("save");v.disabled=true;v.textContent="Saving...";var x=
  x.open("POST","/widgets");x.setRequestHeader("Content-Type","application/x-www-form-urlencoded");
  x.onload=function(){if(x.status==200){dirty=false;draw()}else{v.disabled=false;v.textContent="Try again"}};
  x.onerror=function(){v.disabled=false;v.textContent="Try again"};
- x.send("layout="+encodeURIComponent(ser()))}
+ x.send("layout="+encodeURIComponent(ser())+"&t="+TOK)}
+for(var i=0;i<G.length;i++)if(!G[i].f){pick(i);break}
 draw();
 )JS";
 
@@ -692,14 +820,20 @@ draw();
 
 void SetupPortal::handleWidgets() {
     String body;
-    body.reserve(5200);
-    body += "<a class=back href=/>&lsaquo; Settings</a><h1>Second screen</h1>"
-            "<p class=sub>Opens with the touch button. Drag widgets to move them, tap one to change its size.</p>";
+    body.reserve(7000);
+    body += "<a class=back href=/>&lsaquo; Settings</a><h1>Pages</h1>"
+            "<p class=sub>The touch button shows them one after another, in this order.</p>";
 
-    body += "<div class=head><span>Display</span><span id=cnt></span></div>"
-            "<div class=screen><div class=grid id=scr></div></div><div class=chips id=out></div>"
-            "<p class=hint id=hint>Tap a widget to resize, move or remove it.</p>";
+    // The list, and what can be added
+    body += "<div class=card id=list></div><div class=chips id=addp></div>";
 
+    // The open page
+    body += "<div class=head><span id=pname></span><span id=cnt></span></div>"
+            "<p class=hint id=fixd></p>";
+    body += "<div id=edit><div class=screen><div class=grid id=scr></div></div><div class=chips id=out></div>"
+            "<p class=hint id=hint>Drag a widget to move it, tap it to change it.</p>";
+
+    // The selected widget
     body += "<div id=tools><div class=head><span id=tname></span></div><div class=chips>";
     const char* const SIZE_NAMES[SIZE_COUNT] = {"Small", "Medium", "Large", "Wide"};
     for (uint8_t z = 0; z < SIZE_COUNT; z++) {
@@ -709,36 +843,51 @@ void SetupPortal::handleWidgets() {
     body += "</div><div class=chips>"
             "<button type=button class=chip id=up onclick=move(-1)>&larr; Earlier</button>"
             "<button type=button class=chip id=dn onclick=move(1)>Later &rarr;</button>"
-            "<button type=button class=chip onclick=del()>Remove</button></div></div>";
+            "<button type=button class=chip onclick=del()>Remove</button></div>"
+            "<div class=chips id=mv></div></div>";
 
-    body += "<div class=head><span>Add a widget</span></div><div class=chips>";
+    // The widget catalog, behind "+ Add widget"
+    body += "<div class=chips><button type=button class=chip id=addw onclick=\"catalog=true;draw()\">"
+            "+ Add widget</button></div><div class=chips id=cat>";
     for (uint8_t t = 0; t < WIDGET_TYPE_COUNT; t++) {
-        body += String("<button type=button class=chip data-a onclick=\"add('") + widgetCode(t) + "')\">+ " +
+        body += String("<button type=button class=chip data-a onclick=\"add('") + widgetCode(t) + "')\">" +
                 widgetName(t) + "</button>";
     }
-    body += "</div>";
+    body += "</div></div>";  // End of #edit
 
-    body += "<button type=button class=btn id=save onclick=save()>Saved</button>"
+    body += "<p class=hint><button type=button class=link id=pdel onclick=delPage()>Remove this page</button></p>"
+            "<button type=button class=btn id=save onclick=save()>Saved</button>"
             "<p class=foot><a href=# onclick=\"reset();return false\">Reset to default</a></p>";
 
-    // Data for the script: widget catalog, default and current layout
-    body += "<script>var CAT=[";
+    // Data for the script: widget page limit, widget catalog, dedicated pages,
+    // default and current page list
+    body += "<script>var MAXP=" + String(MAX_WIDGET_PAGES) + ",CAT=[";
     for (uint8_t t = 0; t < WIDGET_TYPE_COUNT; t++) {
         body += String(t > 0 ? "," : "") + "[\"" + widgetCode(t) + "\",\"" + widgetName(t) + "\"]";
     }
-    body += String("],DEF=\"") + DEFAULT_WIDGETS + "\",CUR=\"" + htmlEscape(settings->widgets) + "\";";
+    body += "],FIX=[";
+    for (uint8_t k = PAGE_HOME; k < PAGE_KIND_COUNT; k++) {
+        body += String(k > PAGE_HOME ? "," : "") + "[\"" + pageCode(k) + "\",\"" + pageName(k) + "\",\"" +
+                PAGE_SUMMARIES[k] + "\",\"" + PAGE_DESCRIPTIONS[k] + "\"]";
+    }
+    body += String("],DEF=\"") + DEFAULT_PAGES + "\",CUR=\"" + htmlEscape(settings->widgets) + "\",TOK=\"" +
+            formToken + "\";";
     body += EDITOR_SCRIPT;
     body += "</script>";
     sendPage(body);
 }
 
 void SetupPortal::handleWidgetsSave() {
-    char layout[160];
-    normalizeWidgets(server.arg("layout").c_str(), layout, sizeof(layout));  // Empty is fine: no widgets
+    if (!validToken()) {
+        server.send(403, "text/plain", "page expired, open it again");  // The editor shows "Try again"
+        return;
+    }
+    char layout[MAX_LAYOUT_TEXT];
+    normalizeWidgets(server.arg("layout").c_str(), layout, sizeof(layout));  // Empty pages are fine
     settings->widgets = layout;
     SettingsStore::save(*settings);
     widgetsChanged = true;
-    Serial.printf("Widgets saved: %s\n", layout);
+    Serial.printf("Pages saved: %s\n", layout);
     server.send(200, "text/plain", "ok");
 }
 
@@ -746,13 +895,19 @@ void SetupPortal::handleWidgetsSave() {
 
 namespace {
 
-// City search: asks the device (/city), which asks OpenWeatherMap
+// City search: asks the device (/city), which asks OpenWeatherMap in the
+// background. "202" means not ready yet: ask again. Only the newest search counts.
 const char* const CITY_SCRIPT = R"JS(
+var want="";
 function $(i){return document.getElementById(i)}
 function line(t){$("res").innerHTML="<div class=row><span>"+t+"</span></div>"}
-function find(){var q=$("q").value.trim();if(q.length<2)return;line("Searching...");
+function find(){var q=$("q").value.trim();if(q.length<2)return;want=q;line("Searching...");ask(q,Date.now())}
+function ask(q,t0){if(q!=want)return;
  var x=new XMLHttpRequest();x.open("GET","/city?q="+encodeURIComponent(q));
- x.onload=function(){var a=[];try{a=JSON.parse(x.responseText)}catch(e){}
+ x.onload=function(){if(q!=want)return;
+  if(x.status==202){if(Date.now()-t0>30000)line("Search didn't work, try again");
+   else setTimeout(function(){ask(q,t0)},400);return}
+  var a=[];try{a=JSON.parse(x.responseText)}catch(e){}
   if(x.status!=200){line("Search didn't work, try again");return}
   if(!a.length){line("No city found");return}
   var r=$("res");r.innerHTML="";
@@ -762,7 +917,7 @@ function find(){var q=$("q").value.trim();if(q.length<2)return;line("Searching..
    var p=l.querySelector("input");p.onchange=function(){$("cn").value=c.n;$("la").value=c.lat;
     $("lo").value=c.lon;$("cur").textContent=c.n+(c.r?", "+c.r:"")};
    if(i==0){p.checked=true;p.onchange()}r.appendChild(l)})};
- x.onerror=function(){line("Search didn't work, try again")};x.send()}
+ x.onerror=function(){if(q==want)line("Search didn't work, try again")};x.send()}
 )JS";
 
 // Wi-Fi switch: the device may leave this network, so keep asking and
@@ -782,7 +937,7 @@ show("w");setTimeout(poll,3000);
 
 void SetupPortal::handleSettings() {
     String body;
-    body.reserve(4200);
+    body.reserve(5000);
     body += "<div class=logo></div><h1>Desk settings</h1>";
     body += "<p class=sub>On <b>" + htmlEscape(settings->wifiSsid) + "</b> &middot; " +
             WiFi.localIP().toString() + "</p>";
@@ -790,14 +945,16 @@ void SetupPortal::handleSettings() {
         body += "<div class=toast>Saved</div>";
     }
 
-    // Second screen
-    int widgets = settings->widgets.length() == 0 ? 0 : 1;
+    // Pages: every widget has one ":" in the layout text
+    PageEntry list[MAX_PAGES];
+    int pages = readPages(settings->widgets.c_str(), list, MAX_PAGES);
+    int widgets = 0;
     for (size_t i = 0; i < settings->widgets.length(); i++) {
-        widgets += settings->widgets[i] == ',';
+        widgets += settings->widgets[i] == ':';
     }
-    body += "<div class=head><span>Second screen</span></div><div class=card><a class=row href=/widgets>"
-            "<span>Widgets</span><span>" + String(widgets) + (widgets == 1 ? " widget" : " widgets") +
-            " &rsaquo;</span></a></div>";
+    body += "<div class=head><span>Pages</span></div><div class=card><a class=row href=/widgets>"
+            "<span>" + String(pages) + (pages == 1 ? " page" : " pages") + "</span><span>" + String(widgets) +
+            (widgets == 1 ? " widget" : " widgets") + " &rsaquo;</span></a></div>";
 
     // Claude usage from the browser extension
     String claudeStatus = "Not received yet";
@@ -808,10 +965,11 @@ void SetupPortal::handleSettings() {
     }
     body += "<div class=head><span>Claude usage</span></div><div class=card><div class=row>"
             "<span>Browser extension</span><span>" + claudeStatus + "</span></div></div>"
-            "<p class=note>Sent by the Chrome extension in tools/claude-usage-extension, "
+            "<p class=note>Sent by the Chrome extension in tools/desk-extension, "
             "for the Claude widget.</p>";
 
     body += "<form method=post action=/settings>";
+    body += tokenField();
 
     // Weather city: search, then pick one of the results
     body += "<div class=head><span>Weather city</span></div><div class=card>"
@@ -823,12 +981,37 @@ void SetupPortal::handleSettings() {
     body += "<input type=hidden name=lat id=la value=\"" + String(settings->cityLat, 4) + "\">";
     body += "<input type=hidden name=lon id=lo value=\"" + String(settings->cityLon, 4) + "\">";
 
-    // Calendar link
-    body += "<div class=head><span>Calendar link</span><span>Optional</span></div>"
-            "<div class=card><input class=field name=cal inputmode=url autocapitalize=none autocorrect=off "
-            "spellcheck=false placeholder=\"webcal://...\" value=\"" +
-            htmlEscape(settings->calendarUrl) + "\"></div>";
+    // Calendar link. The saved one is a secret address: only its site is shown,
+    // and an empty field keeps it.
+    bool hasCalendar = settings->calendarUrl.length() > 0;
+    body += "<div class=head><span>Calendar link</span><span>Optional</span></div><div class=card>";
+    if (hasCalendar) {
+        body += "<div class=row><span>" + htmlEscape(linkHost(settings->calendarUrl)) +
+                "</span><span>Saved</span></div>"
+                "<label class=net><input type=checkbox name=calclear value=1>"
+                "<span class=name>Remove the saved link</span></label>";
+    }
+    body += "<input class=field name=cal inputmode=url autocapitalize=none autocorrect=off spellcheck=false "
+            "placeholder=\"";
+    body += hasCalendar ? "New link, or leave empty to keep it" : "webcal://...";
+    body += "\"></div>";
     body += "<p class=note>The iCal or webcal link from Tuudo, Google Calendar or Outlook.</p>";
+
+    // GitHub token for the contribution graph widget. A secret too: never sent back.
+    bool hasGithub = settings->githubToken.length() > 0;
+    body += "<div class=head><span>GitHub token</span><span>Optional</span></div><div class=card>";
+    if (hasGithub) {
+        body += "<div class=row><span>Token</span><span>Saved</span></div>"
+                "<label class=net><input type=checkbox name=ghclear value=1>"
+                "<span class=name>Remove the saved token</span></label>";
+    }
+    body += "<input class=field name=gh type=password autocomplete=off autocapitalize=none autocorrect=off "
+            "spellcheck=false placeholder=\"";
+    body += hasGithub ? "New token, or leave empty to keep it" : "github_pat_...";
+    body += "\"></div>";
+    body += "<p class=note>For the GitHub widget. github.com &rsaquo; Settings &rsaquo; Developer settings "
+            "&rsaquo; Personal access tokens: a token without any permissions is enough.</p>";
+
     body += "<button class=btn>Save</button></form>";
 
     // Wi-Fi
@@ -847,14 +1030,45 @@ void SetupPortal::handleSettingsSave() {
         redirectToRoot();
         return;
     }
-    String city = server.arg("city");
-    city.trim();
-    float lat = server.arg("lat").toFloat();
-    float lon = server.arg("lon").toFloat();
+    if (!validToken()) {
+        sendExpired();
+        return;
+    }
+
+    // Calendar link: a new one, removed, or kept when the field is empty
     String calendar = server.arg("cal");
     calendar.trim();
+    if (server.arg("calclear") == "1") {
+        calendar = "";
+    } else if (calendar.length() == 0) {
+        calendar = settings->calendarUrl;
+    } else if (!isCalendarLink(calendar)) {
+        sendStatusPage(ICON_CROSS, "Not saved", "The calendar link should start with webcal:// or https://.",
+                       "Back");
+        return;
+    }
 
-    bool cityValid = city.length() > 0 && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+    // GitHub token: a new one, removed, or kept when the field is empty
+    String github = server.arg("gh");
+    github.trim();
+    if (server.arg("ghclear") == "1") {
+        github = "";
+    } else if (github.length() == 0) {
+        github = settings->githubToken;
+    } else if (github.indexOf(' ') >= 0) {
+        sendStatusPage(ICON_CROSS, "Not saved", "A GitHub token has no spaces: copy it again.", "Back");
+        return;
+    }
+
+    // Weather city: only when all three fields came (toFloat() of "" is 0)
+    String city = server.arg("city");
+    city.trim();
+    String latText = server.arg("lat");
+    String lonText = server.arg("lon");
+    float lat = latText.toFloat();
+    float lon = lonText.toFloat();
+    bool cityValid = city.length() > 0 && latText.length() > 0 && lonText.length() > 0 && lat >= -90 &&
+                     lat <= 90 && lon >= -180 && lon <= 180;
     if (cityValid && (city != settings->cityName || lat != settings->cityLat || lon != settings->cityLon)) {
         settings->cityName = city;
         settings->cityLat = lat;
@@ -867,12 +1081,19 @@ void SetupPortal::handleSettingsSave() {
         calendarChanged = true;
         Serial.println("Settings: calendar link changed");
     }
+    if (github != settings->githubToken) {
+        settings->githubToken = github;
+        githubChanged = true;
+        Serial.println("Settings: GitHub token changed");
+    }
     SettingsStore::save(*settings);
 
     server.sendHeader("Location", "/?saved=1", true);
     server.send(303, "text/plain", "");
 }
 
+// Answers right away: the places once main.cpp's download task found them,
+// else "202, not yet" (the page asks again)
 void SetupPortal::handleCity() {
     String query = server.arg("q");
     query.trim();
@@ -880,13 +1101,19 @@ void SetupPortal::handleCity() {
         server.send(200, "application/json", "[]");
         return;
     }
-    String json, error;
-    if (!findCities(query, weatherKey, json, error)) {
-        Serial.printf("City search failed: %s\n", error.c_str());
-        server.send(502, "application/json", "[]");
+    if (query == cityResultQuery) {
+        server.send(cityResultOk ? 200 : 502, "application/json", cityResultJson);
+        if (!cityResultOk) {
+            cityResultQuery = "";  // Searching for it again starts a new try
+            cityQuery = "";
+        }
         return;
     }
-    server.send(200, "application/json", json);
+    if (query != cityQuery) {
+        cityQuery = query;
+        cityQueryNew = true;
+    }
+    server.send(202, "application/json", "[]");
 }
 
 void SetupPortal::handleWifiPage() {
@@ -894,13 +1121,23 @@ void SetupPortal::handleWifiPage() {
         redirectToRoot();
         return;
     }
-    scan();  // A few seconds; the page opens with a fresh list
+    // A fresh list (Refresh, or older than a minute) is searched in the
+    // background; until then a spinner page opens /wifi again every second
+    bool stale = scannedAt == 0 || millis() - scannedAt > 60000UL;
+    if (!scanning && (stale || server.arg("scan") == "1")) {
+        startScan(true);
+    }
+    if (scanning) {
+        sendScanning("/wifi");
+        return;
+    }
     String body;
     body.reserve(2400 + networkCount * 420);
     body += "<a class=back href=/>&lsaquo; Settings</a><h1>Wi-Fi</h1>";
     body += "<p class=sub>The display is on <b>" + htmlEscape(settings->wifiSsid) + "</b>.</p>";
     body += "<form method=post action=/wifi onsubmit=\"b.disabled=true;b.textContent='Switching...'\">";
-    body += wifiFields(settings->wifiSsid, "/wifi");
+    body += tokenField();
+    body += wifiFields(settings->wifiSsid, "/wifi?scan=1");
     body += "<button class=btn id=b>Switch network</button>";
     body += "<p class=foot>If the new network doesn't work, the display goes back to <b>" +
             htmlEscape(settings->wifiSsid) + "</b> after about 20 seconds.</p></form>";
@@ -910,6 +1147,10 @@ void SetupPortal::handleWifiPage() {
 void SetupPortal::handleWifiSave() {
     if (state != State::OFF || switchState == Switch::PENDING || switchState == Switch::SWITCHING) {
         redirectToRoot();
+        return;
+    }
+    if (!validToken()) {
+        sendExpired();
         return;
     }
     String ssid, password;
@@ -957,21 +1198,41 @@ void SetupPortal::handleWifiStatus() {
 
 // ---------- Claude usage (browser extension) ----------
 
-// The extension runs in the user's browser; allow its requests from there
-static void allowBrowser(WebServer& server) {
-    server.sendHeader("Access-Control-Allow-Origin", "*");
+// The extension (tools/desk-extension) runs
+// in the user's browser and posts JSON. Only extensions get CORS permission, web
+// pages don't: then a page can't send JSON here either, the browser asks first
+// (OPTIONS) and stops.
+void SetupPortal::allowExtension() {
+    String origin = server.header("Origin");
+    if (!origin.startsWith("chrome-extension://")) {
+        return;
+    }
+    server.sendHeader("Access-Control-Allow-Origin", origin);
+    server.sendHeader("Vary", "Origin");
     server.sendHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
     server.sendHeader("Access-Control-Allow-Private-Network", "true");
 }
 
-void SetupPortal::handleClaudePreflight() {
-    allowBrowser(server);
+void SetupPortal::handleExtensionPreflight() {
+    allowExtension();
     server.send(204, "text/plain", "");
 }
 
+// A form or text/plain body could come from any web page without asking first
+bool SetupPortal::requireJson() {
+    if (server.header("Content-Type").startsWith("application/json")) {
+        return true;
+    }
+    server.send(415, "text/plain", "send JSON (Content-Type: application/json)");
+    return false;
+}
+
 void SetupPortal::handleClaude() {
-    allowBrowser(server);
+    allowExtension();
+    if (!requireJson()) {
+        return;
+    }
     ClaudeUsage usage;
     if (!parseClaudeUsage(server.arg("plain").c_str(), usage)) {
         server.send(400, "text/plain", "expected {\"session\":54,\"weekly\":29,...}");
@@ -983,6 +1244,23 @@ void SetupPortal::handleClaude() {
     if (claudeAtMs == 0) {
         claudeAtMs = 1;
     }
+    server.send(200, "text/plain", "ok");
+}
+
+// ---------- Now playing (browser extension) ----------
+
+void SetupPortal::handleMusic() {
+    allowExtension();
+    if (!requireJson()) {
+        return;
+    }
+    NowPlaying song;
+    if (!parseNowPlaying(server.arg("plain").c_str(), song)) {
+        server.send(400, "text/plain", "expected {\"title\":\"...\",\"artist\":\"...\",\"playing\":true,...}");
+        return;
+    }
+    nowPlaying = song;
+    nowPlayingReceived = true;
     server.send(200, "text/plain", "ok");
 }
 

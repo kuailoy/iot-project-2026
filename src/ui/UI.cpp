@@ -1,6 +1,7 @@
 #include "UI.h"
 
 #include "Components.h"
+#include "../app/HomePages.h"
 
 #include <Arduino.h>
 
@@ -25,7 +26,7 @@ void UI::onRotate(int steps) {
     if (steps != 0) {
         noteInput();
     }
-    if (steps == 0 || wakeUp()) {
+    if (steps == 0 || currentPage == OFF || wakeUp()) {
         return;
     }
 
@@ -33,27 +34,28 @@ void UI::onRotate(int steps) {
         menuPage.move(steps);  // Change the selected line
         redrawNeeded = true;
     } else if (currentPage == CALENDAR) {
-        calendarPage.move(*data, steps);  // Next or previous day
+        calendarPage.move(*data, steps);  // Next or previous day (week in the week view)
         redrawNeeded = true;
     } else if (currentPage == ELECTRICITY) {
         electricityPage.toggleDay();  // Today <-> tomorrow
-    if (currentPage == POMODORO) {
+        redrawNeeded = true;
+    } else if (currentPage == POMODORO) {
         onPomodoroRotate(steps);
-    } else if (currentPage == CALENDAR) {
-        // "Turn: mode", Calendar stays selected to come back
-        menuPage.select(MenuPage::CALENDAR);
-        openPage(MENU);
+    } else if (currentPage == WIDGETS) {
+        // Next or previous widget page, stops at the first and the last
+        int index = widgetIndex + steps;
+        index = index < 0 ? 0 : index >= widgetPages() ? widgetPages() - 1 : index;
+        if (index != widgetIndex) {
+            openWidgets(index);
+        }
     } else if (currentPage == HOME) {
         openPage(MENU);
-    } else {
-        menuPage.move(steps);
-        redrawNeeded = true;
     }
 }
 
 void UI::onPress() {
     noteInput();
-    if (wakeUp()) {
+    if (currentPage == OFF || wakeUp()) {
         return;
     }
 
@@ -67,42 +69,43 @@ void UI::onPress() {
         return;
     }
 
-    // Outside the menu, press opens it; in the menu it opens the selected line
-    if (currentPage != MENU) {
-        openPage(MENU);
-        return;
-    }
     if (currentPage == POMODORO) {
         onPomodoroPress();
         return;
     }
     if (currentPage == CALENDAR) {
-        calendarPage.next();
+        calendarPage.toggleView();  // Day and week view
         redrawNeeded = true;
+        return;
+    }
+
+    // Elsewhere, press opens the menu; in the menu it opens the selected line
+    if (currentPage != MENU) {
+        openPage(MENU);
         return;
     }
 
     switch (menuPage.selected()) {
         case MenuPage::DASHBOARD:
-            openPage(HOME);
+            openStart();
+            break;
+        case MenuPage::POMODORO:
+            openPage(POMODORO);
             break;
         case MenuPage::CALENDAR:
-            calendarPage.open();  // Today
+            calendarPage.open();  // Today, day view
             openPage(CALENDAR);
             break;
         case MenuPage::ELECTRICITY:
             electricityPage.open();  // Today
             openPage(ELECTRICITY);
             break;
+        case MenuPage::MUSIC:
+            openPage(MUSIC);
+            break;
         case MenuPage::SETTINGS:
             settingsOpened = true;  // main.cpp fills in the address and QR code
             openPage(SETTINGS);
-        case MenuPage::POMODORO:
-            openPage(POMODORO);
-            break;
-        case MenuPage::CALENDAR:
-            calendarPage.showToday();
-            openPage(CALENDAR);
             break;
         default:
             // TODO: Open the other mode pages when they are implemented
@@ -112,7 +115,7 @@ void UI::onPress() {
 
 void UI::onLongPress() {
     noteInput();
-    if (wakeUp()) {
+    if (currentPage == OFF || wakeUp()) {
         return;
     }
 
@@ -123,17 +126,14 @@ void UI::onLongPress() {
         setupRestartRequested = true;
     } else if (currentPage == POMODORO) {
         onPomodoroLongPress();
-    } else if (currentPage == CALENDAR) {
-        calendarPage.toggleView();  // Day and week view
-        redrawNeeded = true;
-    } else if (currentPage != HOME) {
-        openPage(HOME);
+    } else {
+        openStart();
     }
 }
 
 void UI::onTouch() {
     noteInput();
-    if (wakeUp()) {
+    if (currentPage == OFF || wakeUp()) {
         return;
     }
 
@@ -141,8 +141,33 @@ void UI::onTouch() {
         return;  // Setup stays until it is done or cancelled
     }
 
-    // Switch between the two home pages; from anywhere else, the widget page
-    openPage(currentPage == WIDGETS ? HOME : WIDGETS);
+    // The pages in the order of the list on the phone (HomePages.h); from a
+    // page that isn't in the list (menu, settings...), the first one
+    int current = listPosition();
+    int target = HomePages::next(current, data->pageCount);
+    if (target == current) {
+        return;  // The only page: nothing to switch to, no refresh
+    }
+    openListPage(target);
+}
+
+void UI::onTouchHold() {
+    if (listPosition() < 0) {
+        onTouch();  // Power off only from a page of the list
+        return;
+    }
+    noteInput();
+
+    offTimeKnown = data->timeValid;
+    offTime = data->now;
+    powerOffRequested = true;
+    openPage(OFF);
+}
+
+bool UI::readyToPowerOff() const {
+    return powerOffRequested && currentPage == OFF && offPageDrawn && display != nullptr && !display->isBusy();
+}
+
 // ---------- Pomodoro ----------
 
 void UI::onPomodoroRotate(int steps) {
@@ -178,7 +203,7 @@ void UI::onPomodoroLongPress() {
     switch (pomodoro.state()) {
         case Pomodoro::READY:
         case Pomodoro::CYCLE_DONE:
-            openPage(HOME);
+            openStart();
             break;
         case Pomodoro::FOCUS:
             break;  // Pause first, so a slip of the finger can't end the session
@@ -191,7 +216,8 @@ void UI::onPomodoroLongPress() {
 
 void UI::updatePomodoro() {
     // Phase ended by itself: show the alert or the next session from any page
-    if (pomodoro.tick(millis())) {
+    // (but not over the "turned off" page)
+    if (pomodoro.tick(millis()) && currentPage != OFF) {
         openPage(POMODORO);
     }
 
@@ -225,11 +251,23 @@ void UI::update() {
     }
 
     updatePomodoro();
+    if (currentPage == OFF && offPageDrawn) {
+        redrawNeeded = false;  // Nothing on it changes (the time is fixed): no second refresh
+    }
     if (!redrawNeeded) {
         return;
     }
     if (display->isBusy()) {
         return;  // Draw the newest state once the panel is free
+    }
+
+    // The widget page shown was deleted on the phone
+    if (currentPage == WIDGETS && widgetIndex >= widgetPages()) {
+        if (widgetPages() > 0) {
+            widgetIndex = 0;
+        } else {
+            openStart();
+        }
     }
 
     display->clearBuffer();
@@ -240,7 +278,7 @@ void UI::update() {
             homePage.draw(*display, *data);
             break;
         case WIDGETS:
-            widgetPage.draw(*display, *data);
+            widgetPage.draw(*display, *data, widgetIndex);
             break;
         case SETTINGS:
             settingsPage.draw(*display, *data);
@@ -254,17 +292,22 @@ void UI::update() {
         case ELECTRICITY:
             electricityPage.draw(*display, *data);
             break;
+        case MUSIC:
+            musicPage.draw(*display, *data);
+            break;
         case SETUP:
             setupPage.draw(*display, *data);
+            break;
         case POMODORO:
             pomodoroPage.draw(*display, *data, pomodoro, millis());
             pomodoroDrawnMinutes = pomodoro.minutesLeft();
             break;
-        case CALENDAR:
-            calendarPage.draw(*display, *data);
-            break;
         case SLEEP:
             sleepPage.draw(*display, *data);
+            break;
+        case OFF:
+            powerOffPage.draw(*display, offTimeKnown ? &offTime : nullptr);
+            offPageDrawn = true;
             break;
     }
 
@@ -279,8 +322,8 @@ bool UI::takeRefreshRequest() {
 }
 
 void UI::enterSleep() {
-    if (pomodoro.isActive()) {
-        return;  // Keep the timer visible
+    if (currentPage == SETUP || currentPage == OFF || pomodoro.isActive()) {
+        return;  // Keep the QR code, the "turned off" page or the timer visible
     }
     if (currentPage != SLEEP) {
         openPage(SLEEP);
@@ -293,7 +336,7 @@ void UI::openSetup() {
 
 void UI::closeSetup() {
     if (currentPage == SETUP) {
-        openPage(HOME);
+        openStart();
     }
 }
 
@@ -325,11 +368,20 @@ void UI::showNextPage() {
     // Add new pages here so the test mode shows them too
     switch (currentPage) {
         case HOME:
-            openPage(WIDGETS);
+            if (widgetPages() > 0) {
+                openWidgets(0);
+            } else {
+                menuPage.select(MenuPage::DASHBOARD);
+                openPage(MENU);
+            }
             break;
         case WIDGETS:
-            menuPage.select(MenuPage::DASHBOARD);
-            openPage(MENU);
+            if (widgetIndex + 1 < widgetPages()) {
+                openWidgets(widgetIndex + 1);  // Every widget page
+            } else {
+                menuPage.select(MenuPage::DASHBOARD);
+                openPage(MENU);
+            }
             break;
         case SETTINGS:
             openPage(HOME);
@@ -343,32 +395,35 @@ void UI::showNextPage() {
                 redrawNeeded = true;
             }
             break;
-        case CALENDAR:
-            electricityPage.open();
-            openPage(ELECTRICITY);
-            break;
-        case ELECTRICITY:
-            openPage(SLEEP);
-            break;
-        case SETUP:
-            break;  // Setup stays until it is done
         case POMODORO:
-            calendarPage.showToday();
-            if (calendarPage.isWeekView()) {
-                calendarPage.toggleView();
-            }
+            calendarPage.open();
             openPage(CALENDAR);
             break;
         case CALENDAR:
             // Day view first, then the week view
             if (calendarPage.isWeekView()) {
-                openPage(SLEEP);
+                electricityPage.open();
+                openPage(ELECTRICITY);
             } else {
                 calendarPage.toggleView();
                 redrawNeeded = true;
             }
             break;
+        case ELECTRICITY:
+            openPage(MUSIC);
+            break;
+        case MUSIC:
+            openPage(SLEEP);
+            break;
+        case SETUP:
+            break;  // Setup stays until it is done
         case SLEEP:
+            // Only shown here: powerOffRequested stays false, so nothing turns off
+            offTimeKnown = data->timeValid;
+            offTime = data->now;
+            openPage(OFF);
+            break;
+        case OFF:
             openPage(HOME);
             break;
     }
@@ -378,11 +433,73 @@ bool UI::wakeUp() {
     if (currentPage != SLEEP) {
         return false;
     }
-    openPage(HOME);
+    openStart();
     return true;
 }
 
 void UI::openPage(Page page) {
     currentPage = page;
     redrawNeeded = true;
+    offPageDrawn = false;
+}
+
+void UI::openWidgets(int index) {
+    if (index >= widgetPages()) {
+        openStart();
+        return;
+    }
+    widgetIndex = index;
+    openPage(WIDGETS);
+}
+
+void UI::openStart() {
+    openListPage(0);
+}
+
+int UI::listPosition() const {
+    for (int i = 0; i < data->pageCount; i++) {
+        const PageEntry& entry = data->pageList[i];
+        bool here = (entry.kind == PAGE_HOME && currentPage == HOME) ||
+                    (entry.kind == PAGE_CALENDAR && currentPage == CALENDAR) ||
+                    (entry.kind == PAGE_PRICES && currentPage == ELECTRICITY) ||
+                    (entry.kind == PAGE_MUSIC && currentPage == MUSIC) ||
+                    (entry.kind == PAGE_POMODORO && currentPage == POMODORO) ||
+                    (entry.kind == PAGE_WIDGETS && currentPage == WIDGETS && entry.grid == widgetIndex);
+        if (here) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void UI::openListPage(int position) {
+    if (position < 0 || position >= data->pageCount) {
+        position = 0;
+    }
+    const PageEntry& entry = data->pageList[position];
+    switch (entry.kind) {
+        case PAGE_HOME:
+            openPage(HOME);
+            break;
+        case PAGE_CALENDAR:
+            calendarPage.open();  // Today, day view
+            openPage(CALENDAR);
+            break;
+        case PAGE_PRICES:
+            electricityPage.open();  // Today
+            openPage(ELECTRICITY);
+            break;
+        case PAGE_MUSIC:
+            openPage(MUSIC);
+            break;
+        case PAGE_POMODORO:
+            openPage(POMODORO);
+            break;
+        default:
+            widgetIndex = entry.grid;
+            openPage(WIDGETS);
+            break;
+    }
+    Serial.printf("Screen: page %d of %d, %s\n", position + 1, data->pageCount,
+                  entry.kind == PAGE_WIDGETS ? "widgets" : pageName(entry.kind));
 }
