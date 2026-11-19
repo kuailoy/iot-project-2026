@@ -45,6 +45,12 @@ struct GitHubContributions {
     uint8_t levels[GITHUB_MAX_DAYS] = {};  // 0 = none ... 4 = most, like GitHub's greens; oldest first
 };
 
+// The placed widgets of one widget page (see WidgetLayout.h)
+struct WidgetGrid {
+    int count = 0;
+    WidgetSlot slots[MAX_WIDGETS];
+};
+
 // Shared data between modules and the UI.
 // Modules (time, weather, sensor, calendar) write here,
 // UI pages only read. Each group has a "valid" flag so the
@@ -87,11 +93,15 @@ struct AppData {
     char setupPassword[16] = "";
     char setupStatus[64] = "";         // "Waiting for a phone to connect..."
 
-    // ---------- Settings page and second home page ----------
+    // ---------- Settings page and widget pages ----------
     char deviceIp[16] = "";            // On the home Wi-Fi, "" when not connected
     char wifiName[33] = "";
-    int widgetCount = 0;
-    WidgetSlot widgets[MAX_WIDGETS];   // Placed widgets, see WidgetLayout.h
+    // The touch button's pages in order (HomePages.h): Home only until the
+    // saved list is read
+    int pageCount = 1;
+    PageEntry pageList[MAX_PAGES];
+    int widgetPageCount = 0;           // Widget pages among them
+    WidgetGrid widgetPages[MAX_WIDGET_PAGES];
 
     // QR code shown on the setup or settings page
     uint8_t qrSize = 0;                       // Modules per side, 0 = no code

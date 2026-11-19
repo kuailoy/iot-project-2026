@@ -29,6 +29,7 @@ void PowerOffPage::draw(Adafruit_GFX& gfx, const struct tm* turnedOffAt) {
         drawTextCentered(gfx, CENTER_X, 377, text, FONT_SMALL_BOLD);
     }
 
-    // First draw after FIRST_DRAW_DELAY_MS (main.cpp), later if the Wi-Fi is slow
-    drawTextCentered(gfx, CENTER_X, 444, "Starting up takes 10 to 20 seconds", FONT_SMALL);
+    // The clock is kept through the deep sleep, so Home is drawn right away
+    // (updateDisplay() in main.cpp); weather and the rest follow
+    drawTextCentered(gfx, CENTER_X, 444, "Starting up takes a few seconds", FONT_SMALL);
 }

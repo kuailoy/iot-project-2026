@@ -10,7 +10,7 @@ struct Settings {
     String calendarUrl;    // iCal / webcal link, "" = no calendar
     String githubToken;    // Personal access token for the GitHub widget, "" = none
     String apPassword;     // Password of the setup Wi-Fi, made once on first start
-    String widgets;        // Second home page layout, e.g. "clock:W,weather:M" (WidgetLayout.h)
+    String widgets;        // Pages in order, e.g. "@home|clock:W,weather:M|@calendar" (WidgetLayout.h)
     String cityName;       // Weather location, shown on the screen
     float cityLat = 0;
     float cityLon = 0;

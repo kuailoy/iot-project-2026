@@ -9,7 +9,7 @@
 // Every change is sent, and every 15 s while the tab is open (see MusicData.h).
 // A message with an empty title means the tab was closed.
 // The extension already turns titles into plain ASCII (the display fonts have
-// nothing else); any other byte that is left becomes '?'.
+// nothing else); what is left is converted here too (PlainText.h).
 struct NowPlaying {
     char title[64] = "";       // "" = the YouTube Music tab was closed
     char artist[48] = "";

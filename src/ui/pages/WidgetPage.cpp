@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../Components.h"
+#include "../WeatherIcons.h"
 #include "../../app/CalendarData.h"
 #include "../../app/ElectricityData.h"
 #include "../../app/DateUtil.h"
@@ -202,13 +203,13 @@ static void drawWeather(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
         return;
     }
 
-    // Cloud on the left, temperature and city on the right. The large and wide
-    // sizes add feels like, wind, sunrise and sunset: below, or to the right
-    // (from the third column of the grid, in line with the temperature).
-    // TODO: Pick the icon from the weather code (sun, rain, snow...)
+    // Weather icon on the left (as on Home: sun, moon at night, rain, snow...),
+    // temperature and city on the right. The large and wide sizes add feels
+    // like, wind, sunrise and sunset: below, or to the right (from the third
+    // column of the grid, in line with the temperature).
     bool wide = b.w >= 600;
     const int16_t detailsX = b.x + 2 * CELL_W;
-    drawCloudIcon(gfx, b.x + PAD, b.y + 44);
+    drawWeatherIcon(gfx, b.x + PAD, b.y + 38, weatherIconFor(data.weatherCode, data.epoch, data.sunrise, data.sunset));
     int16_t textX = b.x + PAD + 160;
     drawTemperature(gfx, textX, b.y + 90, text, FONT_TEMP);
 
@@ -695,15 +696,6 @@ static void formatProgress(char* text, size_t size, const AppData& data) {
     snprintf(text, size, "%s / %s", now, length);
 }
 
-// Outlined bar, filled up to the time into the song
-static void drawProgressBar(Adafruit_GFX& gfx, int16_t x, int16_t y, int16_t w, int16_t h, const AppData& data) {
-    if (data.musicDuration == 0) {
-        return;
-    }
-    gfx.drawRect(x, y, w, h, COLOR_FG);
-    gfx.fillRect(x, y, int32_t(w) * MusicData::position(data) / data.musicDuration, h, COLOR_FG);
-}
-
 static void drawMusic(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
     char text[96];
     const int16_t innerW = b.w - 2 * PAD;
@@ -730,8 +722,7 @@ static void drawMusic(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
     if (small) {
         drawFitted(gfx, b.x + PAD, b.y + 68, data.musicTitle, innerW, FONT_SMALL_BOLD);
         drawFitted(gfx, b.x + PAD, b.y + 92, data.musicArtist, innerW, FONT_SMALL);
-        drawProgressBar(gfx, b.x + PAD, b.y + 104, innerW, 7, data);
-        drawText(gfx, b.x + PAD, b.y + 130, text, FONT_SMALL);
+        drawText(gfx, b.x + PAD, b.y + 120, text, FONT_SMALL);
         return;
     }
 
@@ -743,8 +734,7 @@ static void drawMusic(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
         bool big = measureText(gfx, data.musicTitle, FONT_TEMP) <= innerW;
         drawFitted(gfx, b.x + PAD, b.y + 184, data.musicTitle, innerW, big ? FONT_TEMP : FONT_BODY);
         drawFitted(gfx, b.x + PAD, b.y + 212, data.musicArtist, innerW, FONT_BODY);
-        drawProgressBar(gfx, b.x + PAD, b.y + 228, innerW, 10, data);
-        drawText(gfx, b.x + PAD, b.y + 262, text, FONT_SMALL);
+        drawText(gfx, b.x + PAD, b.y + 244, text, FONT_SMALL);
         return;
     }
 
@@ -755,34 +745,57 @@ static void drawMusic(Adafruit_GFX& gfx, const Box& b, const AppData& data) {
     int16_t x = b.x + PAD + iconSize + 16;
     int16_t w = b.right() - PAD - x;
     if (wide) {
-        // Times next to the label, so the bar can sit under the song
-        drawTextRight(gfx, b.right() - PAD, b.y + LABEL_Y, text, FONT_SMALL);
         bool big = measureText(gfx, data.musicTitle, FONT_TEMP) <= w;
         drawFitted(gfx, x, b.y + 80, data.musicTitle, w, big ? FONT_TEMP : FONT_BODY);
         char byline[96];
         snprintf(byline, sizeof(byline), data.musicAlbum[0] ? "%s - %s" : "%s", data.musicArtist, data.musicAlbum);
         drawFitted(gfx, x, b.y + 106, byline, w, FONT_BODY);
-        drawProgressBar(gfx, x, b.y + 118, w, 8, data);
     } else {
         drawFitted(gfx, x, b.y + 66, data.musicTitle, w, FONT_BODY);
         drawFitted(gfx, x, b.y + 90, data.musicArtist, w, FONT_SMALL);
-        drawProgressBar(gfx, x, b.y + 102, w, 7, data);
-        drawText(gfx, x, b.y + 128, text, FONT_SMALL);
+        drawText(gfx, x, b.y + 116, text, FONT_SMALL);
     }
 }
 
-void WidgetPage::draw(Adafruit_GFX& gfx, const AppData& data) {
+// One dot per page in the bottom margin, the shown page filled
+static void drawPageDots(Adafruit_GFX& gfx, int page, int pages) {
+    const int16_t step = 16;
+    const int16_t radius = 3;
+    const int16_t y = SCREEN_H - 8;
+    int16_t x = SCREEN_W / 2 - (pages - 1) * step / 2;
+    for (int i = 0; i < pages; i++, x += step) {
+        if (i == page) {
+            gfx.fillCircle(x, y, radius, COLOR_FG);
+        } else {
+            gfx.drawCircle(x, y, radius, COLOR_FG);
+        }
+    }
+}
+
+void WidgetPage::draw(Adafruit_GFX& gfx, const AppData& data, int page) {
     // No header and footer: the screen is for the widgets (the controls are
-    // the same as on Home: press = menu, hold = refresh, touch = Home)
-    if (data.widgetCount == 0) {
+    // the same as on Home: press = menu, hold = refresh, touch = next page;
+    // turning the knob also changes the page)
+    if (page < 0 || page >= MAX_WIDGET_PAGES) {
+        page = 0;
+    }
+    // Where this page is in the whole list (Home, Calendar, widget pages...)
+    for (int i = 0; i < data.pageCount && data.pageCount > 1; i++) {
+        if (data.pageList[i].kind == PAGE_WIDGETS && data.pageList[i].grid == page) {
+            drawPageDots(gfx, i, data.pageCount);
+        }
+    }
+
+    const WidgetGrid& grid = data.widgetPages[page];
+    if (grid.count == 0) {
         int16_t middle = SCREEN_H / 2;
         drawTextCentered(gfx, SCREEN_W / 2, middle - 6, "No widgets yet", FONT_BODY);
         drawTextCentered(gfx, SCREEN_W / 2, middle + 24, "Add them on your phone: Menu > Settings", FONT_SMALL);
         return;
     }
 
-    for (int i = 0; i < data.widgetCount; i++) {
-        const WidgetSlot& slot = data.widgets[i];
+    for (int i = 0; i < grid.count; i++) {
+        const WidgetSlot& slot = grid.slots[i];
         int16_t cellX = GRID_X + slot.col * CELL_W;
         int16_t cellY = GRID_TOP + slot.row * CELL_H;
         int16_t cellW = slot.cols * CELL_W;

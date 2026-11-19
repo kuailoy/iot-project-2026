@@ -30,15 +30,12 @@
 // Project: wiring, shared data and UI
 #include "pins.h"
 #include "app/AppData.h"
-#include "services/CalendarService.h"
-#include "services/WeatherService.h"
-#include "services/WeatherParser.h"
-#include "services/ElectricityService.h"
-#include "services/GitHubService.h"
+#include "services/Downloader.h"
 #include "app/DateUtil.h"
 #include "app/FetchSchedule.h"
 #include "app/MusicData.h"
 #include "app/PressGesture.h"
+#include "app/HomePages.h"
 #include "app/Settings.h"
 #include "services/SetupPortal.h"
 #include "ui/UI.h"
@@ -64,7 +61,8 @@ const unsigned long LONG_PRESS_MS = 800;
 const unsigned long POWER_HOLD_MS = 3000;  // Touch button held this long on a home page: turn off
 const unsigned long SLEEP_AFTER_MS = 5 * 60 * 1000UL;  // No input for 5 min
 
-// Wait for time, weather and sensor before the first (slow) E-Ink refresh
+// The first (slow) E-Ink refresh waits for the clock, at most this long
+// (without Wi-Fi after a power loss the time is unknown until NTP)
 const unsigned long FIRST_DRAW_DELAY_MS = 10 * 1000UL;
 
 // Test mode: set UI_DEMO_MODE=1 in platformio.ini to show every page in turn
@@ -83,10 +81,34 @@ AppData appData;
 UI ui;
 Settings settings;      // Home Wi-Fi and calendar link, saved in flash
 SetupPortal portal;     // Wi-Fi setup page, runs when needed
+Downloader downloader;  // Weather, calendar, prices and GitHub, in a task of their own
 bool downloadNow = false;  // Fetch weather and calendar on the next loop
 
-// Set by the touch interrupt, so a tap during a slow E-Ink refresh is not lost
+// Settings version per download kind, raised when the city, calendar link or
+// GitHub token changes: a result asked for with the old one is dropped
+uint32_t downloadGeneration[DownloadJob::KIND_COUNT] = {};
+
+// Set by the touch interrupt, so a tap during a slow E-Ink refresh is not lost.
+// It also measures how long the pin was HIGH: a finger keeps it HIGH for
+// 60 ms or more, a spike (E-Ink or Wi-Fi power) only a few ms. Spikes taken
+// for taps would skip pages.
 volatile bool touchPending = false;
+volatile uint32_t touchRiseMs = 0;
+volatile uint32_t touchPulseMs = 0;  // Length of the last finished touch, 0 while touching
+const uint32_t MIN_TOUCH_MS = 30;    // Shorter: not a finger
+
+// Where the home Wi-Fi was found last time. Kept in RTC memory through the
+// deep sleep of "turned off" (not after a power loss): connecting straight to
+// that router on that channel skips the scan of every channel.
+struct WifiShortcut {
+    bool valid;
+    char ssid[33];
+    uint8_t bssid[6];
+    int32_t channel;
+};
+RTC_DATA_ATTR WifiShortcut wifiShortcut = {};
+volatile bool wifiShortcutTrying = false;  // Connecting with it now
+volatile bool wifiShortcutFailed = false;  // Not found there: scan (set in the Wi-Fi task)
 
 bool sensorFound = false;
 bool encoderFound = false;
@@ -110,9 +132,11 @@ void updateWeather(bool force);
 void updateCalendar(bool force);
 void updatePrices(bool force);
 void updateGitHub(bool force);
+void updateCitySearch();
+void applyDownloads();
 void powerOff();
 void showPagesInTurn();
-void connectWiFi(bool wait);
+void connectWiFi();
 void keepWiFi();
 void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
 void startSetup();
@@ -149,6 +173,7 @@ void setup() {
     initTouch();
     initWiFi();
     initTime();
+    downloader.begin();
 }
 
 // ---------- Main loop ----------
@@ -163,12 +188,14 @@ void loop() {
     keepWiFi();
     updateTime();
     readSensor();
+    applyDownloads();
     bool refresh = ui.takeRefreshRequest() || downloadNow;
     downloadNow = false;
     updateWeather(refresh);
     updateCalendar(refresh);
     updatePrices(refresh);
     updateGitHub(refresh);
+    updateCitySearch();
     updateDisplay();
 
     if (ui.readyToPowerOff()) {
@@ -205,9 +232,12 @@ void initSensor() {
     // Asleep if the device was turned off (powerOff); harmless otherwise
     scd4x.wakeUp();
 
-    // Sensor may still be measuring after a soft reset, stop it first
-    scd4x.stopPeriodicMeasurement();
-    delay(500);
+    // Sensor may still be measuring after a soft reset, stop it first.
+    // Not after turning on: powerOff() already stopped it.
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0) {
+        scd4x.stopPeriodicMeasurement();
+        delay(500);
+    }
 
     sensorFound = (scd4x.startPeriodicMeasurement() == 0);
     Serial.println(sensorFound ? "SCD-41 found" : "SCD-41 not found");
@@ -225,8 +255,17 @@ void initEncoder() {
     Serial.println("Rotary encoder found");
 }
 
+// On both edges: touched (HIGH) and let go (LOW)
 void IRAM_ATTR onTouchInterrupt() {
-    touchPending = true;
+    uint32_t now = millis();
+    if (digitalRead(TOUCH_PIN) == HIGH) {
+        touchRiseMs = now;
+        touchPulseMs = 0;
+        touchPending = true;
+    } else {
+        uint32_t length = now - touchRiseMs;
+        touchPulseMs = length > 0 ? length : 1;
+    }
 }
 
 void initTouch() {
@@ -235,7 +274,7 @@ void initTouch() {
 
     // Pull-down keeps the pin LOW if the module is not connected
     pinMode(TOUCH_PIN, INPUT_PULLDOWN);
-    attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), onTouchInterrupt, RISING);
+    attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), onTouchInterrupt, CHANGE);
     Serial.println("Touch button ready");
 }
 
@@ -244,7 +283,6 @@ void initWiFi() {
     applyWidgets();
     strlcpy(appData.city, settings.cityName.c_str(), sizeof(appData.city));
     appData.githubTokenSet = settings.githubToken.length() > 0;
-    portal.setWeatherKey(WEATHER_API_KEY);
 
     // First start (or after a reset): no home Wi-Fi yet, show the setup page
     if (!settings.hasWifi()) {
@@ -253,28 +291,35 @@ void initWiFi() {
         return;
     }
     WiFi.onEvent(onWiFiEvent);
-    connectWiFi(true);
+    connectWiFi();
 }
 
-// Connect to the saved home Wi-Fi. wait = block up to 15 s (at start-up)
-void connectWiFi(bool wait) {
-    Serial.printf("Connecting to %s", settings.wifiSsid.c_str());
+// Connect to the saved home Wi-Fi in the background (the loop and the screen
+// go on); updateTime() notices when it is connected
+void connectWiFi() {
+    const char* ssid = settings.wifiSsid.c_str();
     WiFi.mode(WIFI_STA);
-    WiFi.begin(settings.wifiSsid.c_str(), settings.wifiPassword.c_str());
-    if (!wait) {
-        Serial.println();
-        return;  // updateTime() notices when it is connected
+    if (wifiShortcut.valid && strcmp(wifiShortcut.ssid, ssid) == 0) {
+        Serial.printf("Connecting to %s (channel %d, like last time)\n", ssid, wifiShortcut.channel);
+        wifiShortcutTrying = true;
+        WiFi.begin(ssid, settings.wifiPassword.c_str(), wifiShortcut.channel, wifiShortcut.bssid);
+    } else {
+        Serial.printf("Connecting to %s\n", ssid);
+        wifiShortcutTrying = false;
+        WiFi.begin(ssid, settings.wifiPassword.c_str());
     }
+}
 
-    // Give up after 15 s so the device still starts without Wi-Fi
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-        delay(500);
-        Serial.print(".");
+// Remember the router and channel for the next start (see WifiShortcut)
+void saveWifiShortcut() {
+    const uint8_t* bssid = WiFi.BSSID();
+    if (bssid == nullptr) {
+        return;
     }
-
-    appData.wifiConnected = (WiFi.status() == WL_CONNECTED);
-    Serial.println(appData.wifiConnected ? " connected" : " failed");
+    memcpy(wifiShortcut.bssid, bssid, sizeof(wifiShortcut.bssid));
+    wifiShortcut.channel = WiFi.channel();
+    strlcpy(wifiShortcut.ssid, settings.wifiSsid.c_str(), sizeof(wifiShortcut.ssid));
+    wifiShortcut.valid = true;
 }
 
 // Log why the Wi-Fi was lost or could not connect (once per new reason).
@@ -283,12 +328,17 @@ void connectWiFi(bool wait) {
 void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     static int lastReason = -1;
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        if (wifiShortcutTrying) {
+            wifiShortcutTrying = false;
+            wifiShortcutFailed = true;  // keepWiFi() searches every channel now
+        }
         int reason = info.wifi_sta_disconnected.reason;
         if (reason != lastReason) {
             Serial.printf("Wi-Fi: not connected, reason %d\n", reason);
             lastReason = reason;
         }
     } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+        wifiShortcutTrying = false;
         Serial.printf("Wi-Fi: connected, IP %s\n", IPAddress(info.got_ip.ip_info.ip.addr).toString().c_str());
         lastReason = -1;
     }
@@ -299,9 +349,32 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 // while the settings page moves the device to another network.
 void keepWiFi() {
     static unsigned long lastTry = 0;
+    static bool shortcutSaved = false;
     const unsigned long RETRY_MS = 30000;
-    if (WiFi.status() == WL_CONNECTED || !settings.hasWifi() || portal.active() || portal.switchingWifi()) {
+    if (!settings.hasWifi() || portal.active() || portal.switchingWifi()) {
+        lastTry = millis();
+        shortcutSaved = false;
+        wifiShortcutFailed = false;
+        return;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!shortcutSaved) {
+            saveWifiShortcut();  // Once per connection
+            shortcutSaved = true;
+        }
         lastTry = millis();  // The first try comes 30 s after the Wi-Fi is lost
+        return;
+    }
+    shortcutSaved = false;
+
+    // The router was not where it was last time: search every channel right away
+    if (wifiShortcutFailed) {
+        wifiShortcutFailed = false;
+        wifiShortcut.valid = false;
+        lastTry = millis();
+        Serial.println("Wi-Fi: not found like last time, searching every channel");
+        WiFi.disconnect();
+        connectWiFi();
         return;
     }
     if (millis() - lastTry < RETRY_MS) {
@@ -331,9 +404,9 @@ void startSetup() {
     ui.openSetup();
 }
 
-// Place the saved widgets of the second home page
+// The saved page list, with every widget page placed
 void applyWidgets() {
-    appData.widgetCount = layoutWidgets(settings.widgets.c_str(), appData.widgets, MAX_WIDGETS);
+    HomePages::place(appData, settings.widgets.c_str());
     ui.requestRedraw();
 }
 
@@ -420,12 +493,14 @@ void applySettingsChanges() {
     if (portal.takeCityChanged()) {
         strlcpy(appData.city, settings.cityName.c_str(), sizeof(appData.city));
         appData.weatherValid = false;  // The old temperature is from the old city
+        downloadGeneration[DownloadJob::WEATHER]++;
         ui.requestRedraw();
         downloadNow = true;
     }
     if (portal.takeCalendarChanged()) {
         appData.calendarValid = false;  // Old events belong to the old link
         appData.eventCount = 0;
+        downloadGeneration[DownloadJob::CALENDAR]++;
         ui.requestRedraw();
         downloadNow = true;
     }
@@ -433,6 +508,7 @@ void applySettingsChanges() {
         appData.githubTokenSet = settings.githubToken.length() > 0;
         appData.githubValid = false;  // The graph may be another user's
         appData.githubTokenRefused = false;
+        downloadGeneration[DownloadJob::GITHUB]++;
         ui.requestRedraw();
         downloadNow = true;
     }
@@ -485,7 +561,7 @@ void updateSetup() {
         portal.end();
         appData.setupActive = false;
         ui.closeSetup();
-        connectWiFi(false);  // Back to the saved Wi-Fi
+        connectWiFi();  // Back to the saved Wi-Fi
         return;
     }
 
@@ -563,9 +639,17 @@ void readSensor() {
     }
 }
 
+// The first draw waits only for the clock: right away after turning on (the
+// ESP32 keeps the time through deep sleep), else once NTP has answered, at
+// most FIRST_DRAW_DELAY_MS. Weather, sensor and calendar are drawn as they
+// come; values that arrive during a refresh go into the next one together.
 void updateDisplay() {
-    if (millis() < FIRST_DRAW_DELAY_MS) {
-        return;
+    static bool started = false;
+    if (!started) {
+        if (!appData.timeValid && !appData.setupActive && millis() < FIRST_DRAW_DELAY_MS) {
+            return;
+        }
+        started = true;
     }
     ui.update();
     display.tick();  // Powers the panel down after EPD_KEEP_POWER_MS
@@ -591,7 +675,11 @@ void handleInput() {
     if (touch.isDown()) {
         lastInput = millis();
         PressGesture::Event event = touch.update(digitalRead(TOUCH_PIN) == HIGH, millis());
-        if (event == PressGesture::TAP) {
+        uint32_t pulse = touchPulseMs;  // 0: the interrupt hasn't seen the release yet
+        if (event == PressGesture::TAP && pulse != 0 && pulse < MIN_TOUCH_MS) {
+            Serial.printf("Touch: ignored a %lu ms spike\n", (unsigned long)pulse);
+        } else if (event == PressGesture::TAP) {
+            Serial.printf("Touch: tap (%lu ms)\n", (unsigned long)pulse);
             ui.onTouch();
         } else if (event == PressGesture::HOLD) {
             ui.onTouchHold();
@@ -629,49 +717,58 @@ void handleInput() {
     }
 }
 
+// ---------- Downloads ----------
+// The update*() functions only decide when to download and hand a job to the
+// download task (Downloader.h); apply*() put the finished results into
+// AppData. So the loop, the controls and the screen never wait for the network.
+
+// A new job of this kind, asked for with the current settings
+std::unique_ptr<DownloadJob> newJob(DownloadJob::Kind kind, bool force) {
+    std::unique_ptr<DownloadJob> job(new DownloadJob(kind));
+    job->force = force;
+    job->generation = downloadGeneration[kind];
+    return job;
+}
+
 // GitHub contribution graph for the GitHub widget
 void updateGitHub(bool force) {
     static FetchSchedule::Timer timer;
 
-    if (WiFi.status() != WL_CONNECTED || portal.active() || settings.githubToken.length() == 0) {
+    if (WiFi.status() != WL_CONNECTED || portal.active() || settings.githubToken.length() == 0 ||
+        downloader.busy(DownloadJob::GITHUB)) {
         return;
-    }
-    if (!force && ui.inUse()) {
-        return;  // Downloads block for a moment
     }
     if (!timer.due(millis(), FetchSchedule::githubInterval(appData), force)) {
         return;
     }
+    std::unique_ptr<DownloadJob> job = newJob(DownloadJob::GITHUB, force);
+    job->key = settings.githubToken;
+    downloader.start(std::move(job));
+}
 
-    // Into a temporary copy, so a failed update keeps the old graph
-    std::unique_ptr<GitHubContributions> fresh(new (std::nothrow) GitHubContributions());
-    if (!fresh) {
-        Serial.println("GitHub: not enough RAM");
-        return;
-    }
-    String error;
-    bool refused = false;
-    bool ok = fetchContributions(settings.githubToken.c_str(), *fresh, error, refused);
-    if (refused != appData.githubTokenRefused) {
-        appData.githubTokenRefused = refused;  // The widget says so instead of "Loading..."
+// A failed download keeps the old graph
+void applyGitHub(const DownloadJob& job) {
+    if (job.tokenRefused != appData.githubTokenRefused) {
+        appData.githubTokenRefused = job.tokenRefused;  // The widget says so instead of "Loading..."
         ui.requestRedraw();
     }
-    if (!ok) {
-        Serial.printf("GitHub request failed: %s\n", error.c_str());
+    if (!job.ok) {
+        Serial.printf("GitHub request failed: %s\n", job.error.c_str());
         return;
     }
 
+    const GitHubContributions& fresh = *job.github;
     const GitHubContributions& old = appData.github;
-    bool changed = !appData.githubValid || fresh->total != old.total || fresh->lastDay != old.lastDay ||
-                   fresh->lastDayCount != old.lastDayCount || fresh->dayCount != old.dayCount ||
-                   strcmp(fresh->login, old.login) != 0 ||
-                   memcmp(fresh->levels, old.levels, sizeof(old.levels)) != 0;
-    appData.github = *fresh;
+    bool changed = !appData.githubValid || fresh.total != old.total || fresh.lastDay != old.lastDay ||
+                   fresh.lastDayCount != old.lastDayCount || fresh.dayCount != old.dayCount ||
+                   strcmp(fresh.login, old.login) != 0 ||
+                   memcmp(fresh.levels, old.levels, sizeof(old.levels)) != 0;
+    appData.github = fresh;
     appData.githubValid = true;
-    Serial.printf("GitHub: %s, %lu contributions in the last year, %u today\n", fresh->login,
-                  (unsigned long)fresh->total, fresh->lastDayCount);
+    Serial.printf("GitHub: %s, %lu contributions in the last year, %u today\n", fresh.login,
+                  (unsigned long)fresh.total, fresh.lastDayCount);
 
-    if (changed || force) {
+    if (changed || job.force) {
         ui.requestRedraw();
     }
 }
@@ -734,43 +831,30 @@ void showPagesInTurn() {
 void updateWeather(bool force) {
     static FetchSchedule::Timer timer;
 
-    if (WiFi.status() != WL_CONNECTED || portal.active()) {
-        return;
-    }
-
-    // Downloads block for a moment: wait while the controls are in use
-    if (!force && ui.inUse()) {
+    if (WiFi.status() != WL_CONNECTED || portal.active() || downloader.busy(DownloadJob::WEATHER)) {
         return;
     }
     if (!timer.due(millis(), FetchSchedule::weatherInterval(appData), force)) {
         return;
     }
+    std::unique_ptr<DownloadJob> job = newJob(DownloadJob::WEATHER, force);
+    job->key = WEATHER_API_KEY;
+    job->latitude = settings.cityLat;
+    job->longitude = settings.cityLon;
+    downloader.start(std::move(job));
+}
 
-    String response;
-    String requestError;
-    if (!fetchWeather(settings.cityLat, settings.cityLon, WEATHER_API_KEY, response, requestError)) {
-        Serial.printf("Weather request failed: %s\n", requestError.c_str());
+void applyWeather(const DownloadJob& job) {
+    if (!job.ok) {
+        Serial.printf("Weather request failed: %s\n", job.error.c_str());
         return;
     }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, response);
-    if (error) {
-        Serial.printf("Weather JSON error: %s\n", error.c_str());
-        return;
-    }
-
-    Weather weather;
-    if (!readWeather(doc.as<JsonObjectConst>(), weather)) {
-        Serial.println("Weather JSON error: response is missing temperature or condition code");
-        return;
-    }
-    Serial.printf("Weather: %s, %.1f C (feels %.1f), wind %.1f m/s from %d, code %d\n",
-                  doc["name"] | "unknown", weather.temperature, weather.feelsLike, weather.windSpeed,
-                  weather.windDeg, weather.code);
+    const Weather& weather = job.weather;
+    Serial.printf("Weather: %s, %.1f C (feels %.1f), wind %.1f m/s from %d, code %d\n", appData.city,
+                  weather.temperature, weather.feelsLike, weather.windSpeed, weather.windDeg, weather.code);
 
     bool changed = storeWeather(weather, appData);
-    if (changed || force) {
+    if (changed || job.force) {
         ui.requestRedraw();
     }
 }
@@ -791,12 +875,8 @@ void updateCalendar(bool force) {
     static bool warnedNoUrl = false;
 
     // Needs the date to know which days to load
-    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active()) {
-        return;
-    }
-
-    // Downloads block for a moment: wait while the controls are in use
-    if (!force && ui.inUse()) {
+    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active() ||
+        downloader.busy(DownloadJob::CALENDAR)) {
         return;
     }
     if (settings.calendarUrl.length() == 0) {
@@ -814,41 +894,36 @@ void updateCalendar(bool force) {
 
     // From this week's Monday (the calendar page shows this week) to
     // 8 weeks ahead (for the next event on Home and in the menu)
+    std::unique_ptr<DownloadJob> job = newJob(DownloadJob::CALENDAR, force);
     int32_t today = DateUtil::dayOf(appData.now);
-    int32_t firstDay = today - DateUtil::weekday(today);
-    int32_t lastDay = today + CALENDAR_DAYS_AHEAD;
+    job->firstDay = today - DateUtil::weekday(today);
+    job->lastDay = today + CALENDAR_DAYS_AHEAD;
+    job->url = settings.calendarUrl;
+    downloader.start(std::move(job));
+}
 
-    // Download into a temporary list, so a failed update keeps the old events
-    std::unique_ptr<CalendarEvent[]> events(new (std::nothrow) CalendarEvent[MAX_CALENDAR_EVENTS]);
-    if (!events) {
-        Serial.println("Calendar: not enough RAM");
-        return;
-    }
-
-    String error;
-    int32_t completeUntil = lastDay;
-    int count = fetchCalendar(settings.calendarUrl.c_str(), firstDay, lastDay, events.get(), MAX_CALENDAR_EVENTS,
-                              completeUntil, error);
-    if (count < 0) {
-        Serial.printf("Calendar request failed: %s\n", error.c_str());
+// Downloaded into a list of its own, so a failed update keeps the old events
+void applyCalendar(const DownloadJob& job) {
+    if (!job.ok) {
+        Serial.printf("Calendar request failed: %s\n", job.error.c_str());
         return;
     }
 
     // Days after completeUntil may be missing events: treat them as unknown
-    lastDay = completeUntil;
+    int count = job.eventCount;
     bool changed = !appData.calendarValid || count != appData.eventCount ||
-                   firstDay != appData.calendarFirstDay || lastDay != appData.calendarLastDay ||
-                   !sameEvents(events.get(), appData.events, count);
+                   job.firstDay != appData.calendarFirstDay || job.completeUntil != appData.calendarLastDay ||
+                   !sameEvents(job.events.get(), appData.events, count);
 
     for (int i = 0; i < count; i++) {
-        appData.events[i] = events[i];
+        appData.events[i] = job.events[i];
     }
     appData.eventCount = count;
-    appData.calendarFirstDay = firstDay;
-    appData.calendarLastDay = lastDay;
+    appData.calendarFirstDay = job.firstDay;
+    appData.calendarLastDay = job.completeUntil;
     appData.calendarValid = true;
 
-    if (changed || force) {
+    if (changed || job.force) {
         ui.requestRedraw();
     }
 }
@@ -859,28 +934,24 @@ void updateCalendar(bool force) {
 void updatePrices(bool force) {
     static FetchSchedule::Timer timer;
 
-    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active()) {
+    if (WiFi.status() != WL_CONNECTED || !appData.timeValid || portal.active() ||
+        downloader.busy(DownloadJob::PRICES)) {
         return;
-    }
-    if (!force && ui.inUse()) {
-        return;  // Downloads block for a moment
     }
     if (!timer.due(millis(), FetchSchedule::pricesInterval(appData), force, FetchSchedule::PRICES_MIN_GAP_MS)) {
         return;
     }
+    downloader.start(newJob(DownloadJob::PRICES, force));
+}
 
-    std::unique_ptr<PricePoint[]> prices(new (std::nothrow) PricePoint[MAX_PRICES]);
-    if (!prices) {
-        Serial.println("Prices: not enough RAM");
-        return;
-    }
-    String error;
-    int count = fetchPrices(prices.get(), MAX_PRICES, error);
-    if (count < 0) {
-        Serial.printf("Price request failed: %s\n", error.c_str());
+void applyPrices(const DownloadJob& job) {
+    if (!job.ok) {
+        Serial.printf("Price request failed: %s\n", job.error.c_str());
         return;
     }
 
+    int count = job.priceCount;
+    const PricePoint* prices = job.prices.get();
     bool changed = !appData.pricesValid || count != appData.priceCount;
     for (int i = 0; i < count && !changed; i++) {
         changed = prices[i].start != appData.prices[i].start || prices[i].cents != appData.prices[i].cents;
@@ -896,5 +967,50 @@ void updatePrices(bool force) {
 
     if (changed) {
         ui.requestRedraw();
+    }
+}
+
+// City search on the settings page (desk.local): the page asks again until
+// the answer is there, so the web server never waits for OpenWeatherMap
+void updateCitySearch() {
+    String query;
+    if (downloader.busy(DownloadJob::CITY_SEARCH) || !portal.takeCitySearch(query)) {
+        return;
+    }
+    std::unique_ptr<DownloadJob> job = newJob(DownloadJob::CITY_SEARCH, false);
+    job->key = WEATHER_API_KEY;
+    job->query = query;
+    downloader.start(std::move(job));
+}
+
+// Finished downloads into AppData; only the loop touches AppData
+void applyDownloads() {
+    while (std::unique_ptr<DownloadJob> job = downloader.takeFinished()) {
+        if (job->generation != downloadGeneration[job->kind]) {
+            downloadNow = true;  // Asked for with the old city, link or token: ask again
+            continue;
+        }
+        switch (job->kind) {
+            case DownloadJob::WEATHER:
+                applyWeather(*job);
+                break;
+            case DownloadJob::CALENDAR:
+                applyCalendar(*job);
+                break;
+            case DownloadJob::PRICES:
+                applyPrices(*job);
+                break;
+            case DownloadJob::GITHUB:
+                applyGitHub(*job);
+                break;
+            case DownloadJob::CITY_SEARCH:
+                if (!job->ok) {
+                    Serial.printf("City search failed: %s\n", job->error.c_str());
+                }
+                portal.citySearchDone(job->query, job->ok, job->json);
+                break;
+            case DownloadJob::KIND_COUNT:
+                break;
+        }
     }
 }

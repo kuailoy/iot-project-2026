@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+const STATUS_KINDS = ["claude", "music"];
 
 // An empty address field means the default in settings.js
 async function load() {
@@ -12,8 +13,8 @@ async function load() {
 }
 
 async function showStatus() {
-  const statuses = await chrome.storage.local.get(["claude", "music"]);
-  for (const kind of ["claude", "music"]) {
+  const statuses = await chrome.storage.local.get(STATUS_KINDS);
+  for (const kind of STATUS_KINDS) {
     const status = statuses[kind];
     $(`${kind}-status`).textContent = status
       ? `${status.text} (${new Date(status.at).toLocaleTimeString()})`

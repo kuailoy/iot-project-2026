@@ -20,7 +20,9 @@
 //    The device tries the network; if it works it is saved, otherwise the
 //    page says so and setup goes on.
 //
-// Everything runs from loop(), so the screen and the knob keep working.
+// Everything runs from loop(), so the screen and the knob keep working. No
+// page waits for slow work: Wi-Fi scans run in the background and the city
+// search in main.cpp's download task, while the page shows a spinner.
 //
 // All other settings are on the home Wi-Fi at http://desk.local (or the
 // device's IP), see startLan(): widgets of the second home page, weather
@@ -55,8 +57,12 @@ public:
     // True while it moves the device to another Wi-Fi (from the settings page)
     bool switchingWifi() const { return switchState == Switch::PENDING || switchState == Switch::SWITCHING; }
 
-    // OpenWeatherMap key for the city search
-    void setWeatherKey(const char* key) { weatherKey = key; }
+    // City search on the settings page. It takes a few seconds (OpenWeatherMap
+    // over HTTPS), so main.cpp runs it in the download task: it takes a new
+    // query, runs findCities() and hands the answer back. Meanwhile the page
+    // keeps asking (/city answers "202, not yet").
+    bool takeCitySearch(String& query);
+    void citySearchDone(const String& query, bool ok, const String& json);
 
     // True once after these were changed on the phone (already saved)
     bool takeWidgetsChanged();
@@ -101,7 +107,6 @@ private:
     WebServer server{80};
     bool routesAdded = false;
     bool lanOn = false;
-    const char* weatherKey = "";
     bool widgetsChanged = false;
     bool cityChanged = false;
     bool calendarChanged = false;
@@ -112,6 +117,13 @@ private:
     unsigned long claudeAtMs = 0;   // When the last numbers came, 0 = never
     NowPlaying nowPlaying;
     bool nowPlayingReceived = false;
+
+    // City search (see takeCitySearch)
+    String cityQuery;              // What the page asks for now
+    bool cityQueryNew = false;     // Not taken by main.cpp yet
+    String cityResultQuery;        // The last finished search
+    String cityResultJson;
+    bool cityResultOk = false;
 
     // Switching the home Wi-Fi from the settings page
     enum class Switch : uint8_t { IDLE, PENDING, SWITCHING, DONE, FAILED };
@@ -138,6 +150,9 @@ private:
 
     Network networks[MAX_NETWORKS];
     int networkCount = 0;
+    bool scanning = false;          // A scan runs in the background (startScan)
+    unsigned long scanStart = 0;
+    unsigned long scannedAt = 0;    // When the list was made, 0 = never
 
     String pendingSsid;
     String pendingPassword;
@@ -146,9 +161,15 @@ private:
     String failReason;
 
     void setState(State next);
-    // Look for networks. onHomeWifi: the device is serving a page over the
-    // home Wi-Fi, so a failed scan must not stop that connection.
-    void scan(bool onHomeWifi);
+    // Look for networks and wait for the list (2-4 s): only when the setup starts
+    void scanNow();
+    // Look for networks in the background; pollScan() (from loop) takes the
+    // list when it is ready, pages show "Looking for networks..." until then.
+    // onHomeWifi: the device is serving pages over the home Wi-Fi, so a
+    // failed scan must not stop that connection.
+    void startScan(bool onHomeWifi);
+    void pollScan();
+    void readScan(int found);  // The list from a finished scan
 
     void addRoutes();
     void handleRoot();
@@ -172,11 +193,15 @@ private:
     void handleSave();
     void handleStatus();
     void handleScan();
+    void handleStyle();
     void redirectToRoot();
-    void sendPage(const String& body, int refreshSeconds = 0);
+    // refreshSeconds > 0: the page opens refreshUrl after that many seconds
+    void sendPage(const String& body, int refreshSeconds = 0, const char* refreshUrl = "/status");
     // icon = nullptr shows a spinner
     void sendStatusPage(const char* icon, const String& title, const String& text, const String& button,
-                        int refreshSeconds = 0);
+                        int refreshSeconds = 0, const char* refreshUrl = "/status");
+    // Spinner page while a scan runs; opens `url` again every second
+    void sendScanning(const char* url);
 };
 
 // QR code that joins a Wi-Fi network ("WIFI:T:WPA;S:name;P:password;;"),
