@@ -40,7 +40,13 @@ void load(Settings& settings) {
     settings.calendarUrl = prefs.isKey("cal") ? prefs.getString("cal", "") : String(CALENDAR_ICS_URL);
     settings.githubToken = prefs.isKey("gh") ? prefs.getString("gh", "") : String(GITHUB_TOKEN);
     settings.apPassword = prefs.getString("apPass", "");
-    settings.widgets = prefs.isKey("w2") ? prefs.getString("w2", "") : String(DEFAULT_WIDGETS);
+    if (prefs.isKey("pages")) {
+        settings.widgets = prefs.getString("pages", "");
+    } else {
+        // Saved before dedicated pages: widget pages ("w2") and whether Home comes first ("home")
+        String widgets = prefs.isKey("w2") ? prefs.getString("w2", "") : String(DEFAULT_WIDGETS);
+        settings.widgets = prefs.getBool("home", true) ? "@home|" + widgets : widgets;
+    }
     settings.cityName = prefs.getString("city", "Kuopio");
     settings.cityLat = prefs.getFloat("lat", 62.89f);
     settings.cityLon = prefs.getFloat("lon", 27.68f);
@@ -61,7 +67,7 @@ void save(const Settings& settings) {
     prefs.putString("cal", settings.calendarUrl);
     prefs.putString("gh", settings.githubToken);
     prefs.putString("apPass", settings.apPassword);
-    prefs.putString("w2", settings.widgets);
+    prefs.putString("pages", settings.widgets);
     prefs.putString("city", settings.cityName);
     prefs.putFloat("lat", settings.cityLat);
     prefs.putFloat("lon", settings.cityLon);

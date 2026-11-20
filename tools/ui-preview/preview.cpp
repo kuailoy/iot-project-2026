@@ -27,15 +27,18 @@
 #include "pages/SettingsPage.h"
 #include "pages/SetupPage.h"
 #include "pages/WidgetPage.h"
+#include "WeatherIcons.h"
 #include "pages/SleepPage.h"
 #include "../../src/services/GitHubParser.h"
 #include "../../src/services/NowPlaying.h"
+#include "../app/PlainText.h"
 #include "../app/MusicData.h"
 #include "pages/MusicPage.h"
 #include "../../src/services/IcsParser.h"
 #include "../../src/services/WeatherParser.h"
 #include "../app/FetchSchedule.h"
 #include "../app/PressGesture.h"
+#include "../app/HomePages.h"
 #include "../app/ElectricityData.h"
 #include "../../src/services/ClaudeUsage.h"
 
@@ -51,6 +54,11 @@ static bool savePbm(GFXcanvas1& canvas, const char* path) {
     fwrite(canvas.getBuffer(), 1, bytes, file);
     fclose(file);
     return true;
+}
+
+// All widget pages from a layout text, like main.cpp's applyWidgets()
+static void setWidgets(AppData& data, const char* layout) {
+    HomePages::place(data, layout);
 }
 
 // Same values as the Figma design
@@ -561,8 +569,8 @@ static void checkNowPlaying(AppData data) {
     check(!parseNowPlaying("{\"artist\":\"x\"}", song), "a message without title or state is refused");
     check(!parseNowPlaying("not json", song), "not JSON is refused");
     check(parseNowPlaying("{\"title\":\"Beyonc\xC3\xA9\",\"playing\":false}", song) &&
-              strcmp(song.title, "Beyonc?") == 0,
-          "what the extension didn't make ASCII becomes '?'");
+              strcmp(song.title, "Beyonce") == 0,
+          "what the extension didn't make plain is converted here");
     check(parseNowPlaying("{\"title\":\"x\",\"playing\":true,\"position\":500,\"duration\":200}", song) &&
               song.position == 200,
           "the position is kept inside the song");
@@ -582,6 +590,34 @@ static void checkNowPlaying(AppData data) {
     char text[16];
     MusicData::formatTime(text, sizeof(text), 3723);
     check(strcmp(text, "1:02:03") == 0, "hours in long times");
+
+    // Plain ASCII for the display's fonts
+    char plain[64];
+    struct {
+        const char* in;
+        const char* out;
+    } texts[] = {
+        {"Beyonc\xC3\xA9", "Beyonce"},
+        {"\xC5\x81\xC3\xB3" "d\xC5\xBA, Stra\xC3\x9F" "e", "Lodz, Strasse"},
+        {"\xD0\x9E\xD0\xBA\xD0\xB5\xD0\xB0\xD0\xBD \xD0\x95\xD0\xBB\xD1\x8C\xD0\xB7\xD0\xB8", "Okean Elzy"},
+        {"\xD0\xA9\xD0\xB5\xD0\xB4\xD1\x80\xD0\xB8\xD0\xBA", "Shchedryk"},
+        {"Don\xE2\x80\x99t Stop \xE2\x80\x94 Live\xE2\x80\xA6", "Don't Stop - Live..."},
+        {"Cafe\xCC\x81", "Cafe"},
+        {"\xF0\x9F\x8E\xB5 Song  \xF0\x9F\x94\xA5 ", "Song"},
+        {"\xE6\x9D\xB1\xE4\xBA\xAC Tokyo", "?? Tokyo"},
+        {"broken \xC3", "broken"},
+    };
+    bool allPlain = true;
+    for (const auto& t : texts) {
+        toPlainText(t.in, plain, sizeof(plain));
+        if (strcmp(plain, t.out) != 0) {
+            printf("  plain text: \"%s\" instead of \"%s\"\n", plain, t.out);
+            allPlain = false;
+        }
+    }
+    check(allPlain, "accents, Polish, German, Ukrainian, punctuation, emoji and other scripts");
+    toPlainText("Okean Elzy - Obiimy", plain, 9);
+    check(strcmp(plain, "Okean El") == 0, "cut to fit, always ends");
 
     if (checksFailed == failedBefore) {
         printf("Music checks passed\n");
@@ -603,7 +639,7 @@ static void saveMusicPages(GFXcanvas1& canvas, const AppData& source) {
     canvas.fillScreen(COLOR_BG);
     page.draw(canvas, data);
     savePbm(canvas, "out/music.pbm");
-    data.widgetCount = layoutWidgets("music:L,music:M,music:S,music:W", data.widgets, MAX_WIDGETS);
+    setWidgets(data, "music:L,music:M,music:S,music:W");
     canvas.fillScreen(COLOR_BG);
     widgets.draw(canvas, data);
     savePbm(canvas, "out/home2-music.pbm");
@@ -624,6 +660,7 @@ static void saveMusicPages(GFXcanvas1& canvas, const AppData& source) {
     canvas.fillScreen(COLOR_BG);
     widgets.draw(canvas, data);
     savePbm(canvas, "out/home2-music-paused.pbm");
+
 
     // The browser was closed: nothing playing, the last song stays
     data.musicUpdated = data.epoch - 10 * 60;
@@ -858,6 +895,29 @@ static void checkWeather() {
     next.sunset += 60;
     check(storeWeather(next, data), "sunset a minute later redraws");
 
+    // Icons: the code picks one, the moon after sunset
+    check(weatherIconFromCode(800) == WeatherIcon::CLEAR && weatherIconFromCode(800, true) == WeatherIcon::CLEAR_NIGHT &&
+              weatherIconFromCode(801, true) == WeatherIcon::FEW_CLOUDS_NIGHT,
+          "clear and few clouds have night icons");
+    check(weatherIconFromCode(802) == WeatherIcon::CLOUDS && weatherIconFromCode(804) == WeatherIcon::OVERCAST &&
+              weatherIconFromCode(0) == WeatherIcon::CLOUDS && weatherIconFromCode(804, true) == WeatherIcon::OVERCAST,
+          "clouds, overcast, unknown code");
+    check(weatherIconFromCode(500) == WeatherIcon::RAIN && weatherIconFromCode(502) == WeatherIcon::HEAVY_RAIN &&
+              weatherIconFromCode(522) == WeatherIcon::HEAVY_RAIN && weatherIconFromCode(311) == WeatherIcon::DRIZZLE,
+          "light and heavy rain, drizzle");
+    check(weatherIconFromCode(511) == WeatherIcon::SLEET && weatherIconFromCode(615) == WeatherIcon::SLEET &&
+              weatherIconFromCode(601) == WeatherIcon::SNOW,
+          "freezing rain and rain with snow are sleet");
+    check(weatherIconFromCode(781) == WeatherIcon::WIND && weatherIconFromCode(741) == WeatherIcon::ATMOSPHERE &&
+              weatherIconFromCode(211) == WeatherIcon::THUNDERSTORM,
+          "tornado is wind, fog is mist");
+    const time_t rise = 1794812400, set = rise + 11 * 3600;  // 11 hours of daylight
+    check(!isNight(rise + 3600, rise, set) && isNight(set + 60, rise, set) && isNight(rise - 60, rise, set),
+          "night is between sunset and sunrise");
+    check(!isNight(rise + 86400 + 3600, rise, set) && isNight(set + 86400 + 60, rise, set),
+          "yesterday's sunrise and sunset still work");
+    check(!isNight(rise, 0, 0) && !isNight(0, rise, set), "unknown sunrise or time: day");
+
     if (checksFailed == failedBefore) {
         printf("Weather checks passed\n");
     }
@@ -1067,6 +1127,73 @@ static void checkWidgetLayout() {
     check(normalizeWidgets("clock:S,weather:L", text, 10) && strcmp(text, "clock:S") == 0,
           "a short buffer gets whole entries only");
     check(layoutWidgets(DEFAULT_WIDGETS, slots, MAX_WIDGETS) == 7, "the default layout fits");
+
+    // Several pages, separated by "|"
+    const char* pages = "clock:L,date:S|github:W,price:M|";
+    check(widgetPageCount(pages) == 3 && widgetPageCount("") == 1 && widgetPageCount(DEFAULT_WIDGETS) == 1,
+          "pages are counted, an empty text is one empty page");
+    check(layoutWidgets(pages, slots, MAX_WIDGETS, 0) == 2 && slots[1].type == WIDGET_DATE,
+          "the first page ends at the |");
+    check(layoutWidgets(pages, slots, MAX_WIDGETS, 1) == 2 && slotIs(slots[0], WIDGET_GITHUB, 0, 0, 4, 1),
+          "the second page is placed on its own grid");
+    check(layoutWidgets(pages, slots, MAX_WIDGETS, 2) == 0 && layoutWidgets(pages, slots, MAX_WIDGETS, 3) == 0,
+          "an empty page and a missing page have no widgets");
+    check(normalizeWidgets("clock:L,radio:S||github:W,price:X", text, sizeof(text)) &&
+              strcmp(text, "clock:L||github:W") == 0,
+          "cleaning keeps every page, empty ones too");
+    check(normalizeWidgets("co2:S|co2:S|co2:S|co2:S|co2:S|co2:S|co2:S", text, sizeof(text)) &&
+              strcmp(text, "co2:S|co2:S|co2:S|co2:S|co2:S") == 0,
+          "at most 5 pages");
+    check(!normalizeWidgets("|radio:M", text, sizeof(text)) && strcmp(text, "|") == 0,
+          "only empty pages: kept, but false");
+
+    // Dedicated pages ("@calendar") and widget pages in one list
+    PageEntry list[MAX_PAGES];
+    const char* mixed = "@home|clock:L|@calendar|github:W|@music|@pomodoro|@prices";
+    int listed = readPages(mixed, list, MAX_PAGES);
+    std::string order;
+    for (int i = 0; i < listed; i++) {
+        order += list[i].kind == PAGE_WIDGETS ? "w" + std::to_string(list[i].grid) + " " :
+                                                std::string(pageCode(list[i].kind)) + " ";
+    }
+    check(order == "home w0 calendar w1 music pomodoro prices ", "the list keeps the order of the text");
+    check(widgetPageCount(mixed) == 2 && layoutWidgets(mixed, slots, MAX_WIDGETS, 1) == 1 &&
+              slots[0].type == WIDGET_GITHUB,
+          "widget pages are counted without the dedicated ones");
+    check(readPages("@home|@calendar|@home|@radio|clock:S", list, MAX_PAGES) == 3 && list[2].kind == PAGE_WIDGETS,
+          "unknown and repeated dedicated pages are skipped");
+    check(readPages("@calendar", list, MAX_PAGES) == 1 && list[0].kind == PAGE_CALENDAR &&
+              widgetPageCount("@calendar") == 0,
+          "only a dedicated page, no widget page");
+    check(readPages("@radio", list, MAX_PAGES) == 1 && list[0].kind == PAGE_WIDGETS,
+          "nothing valid: one empty widget page");
+    check(normalizeWidgets("@home|clock:L,radio:S|@home|@radio|@music|", text, sizeof(text)) &&
+              strcmp(text, "@home|clock:L|@music|") == 0,
+          "cleaning keeps the order, each dedicated page once");
+    check(readPages(DEFAULT_PAGES, list, MAX_PAGES) == 2 && list[0].kind == PAGE_HOME &&
+              widgetPageCount(DEFAULT_PAGES) == 1,
+          "by default: Home, then one widget page");
+
+    // The touch button goes through the list in order, then back to the first
+    std::string steps;
+    for (int position = 0, i = 0; i < 9; i++, position = HomePages::next(position, 4)) {
+        steps += std::to_string(position + 1) + " ";
+    }
+    check(steps == "1 2 3 4 1 2 3 4 1 ", "pages 1, 2, 3, 4, 1, ...");
+    check(HomePages::next(-1, 4) == 0, "from a page that isn't in the list: the first");
+    check(HomePages::next(0, 1) == 0, "one page: it stays");
+
+    // Five full pages of the longest entries and every dedicated page fit in MAX_LAYOUT_TEXT
+    std::string full;
+    for (int page = 0; page < MAX_WIDGET_PAGES; page++) {
+        for (int i = 0; i < MAX_WIDGETS; i++) {
+            full += std::string(i > 0 ? "," : page > 0 ? "|" : "") + "weather:W";
+        }
+    }
+    full += "|@home|@calendar|@prices|@music|@pomodoro";
+    static char longest[MAX_LAYOUT_TEXT];
+    check(normalizeWidgets(full.c_str(), longest, sizeof(longest)) && full == longest,
+          "the longest layout fits in MAX_LAYOUT_TEXT");
 
     for (uint8_t t = 0; t < WIDGET_TYPE_COUNT; t++) {
         snprintf(text, sizeof(text), "%s:W", widgetCode(t));
@@ -1369,23 +1496,33 @@ int main() {
     // Second home page: the default layout, and one with every widget
     WidgetPage widgetPage;
     AppData widgetData = calendarData;
-    widgetData.widgetCount = layoutWidgets(DEFAULT_WIDGETS, widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, DEFAULT_WIDGETS);
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2.pbm");
 
-    widgetData.widgetCount =
-        layoutWidgets("agenda:L,weather:M,date:S,co2:S,price:W", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "agenda:L,weather:M,date:S,co2:S,price:W");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-all.pbm");
 
-    widgetData.widgetCount = layoutWidgets("indoor:W,next:M,weather:S,date:S,clock:M,indoor:M", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "indoor:W,next:M,weather:S,date:S,clock:M,indoor:M");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-wide.pbm");
 
-    widgetData.widgetCount = layoutWidgets("claude:L,claude:M,claude:S,clock:S,price:M,indoor:S,co2:S", widgetData.widgets, MAX_WIDGETS);
+    // Home, Calendar and three widget pages: the dots show the second widget
+    // page, 4th of 5; then the empty third widget page
+    setWidgets(widgetData,
+               "@home|clock:M,date:M,weather:W,next:W|@calendar|indoor:W,next:M,weather:S,date:S,clock:M,indoor:M|");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData, 1);
+    savePbm(canvas, "out/home2-pages.pbm");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, widgetData, 2);
+    savePbm(canvas, "out/home2-pages-empty.pbm");
+
+    setWidgets(widgetData, "claude:L,claude:M,claude:S,clock:S,price:M,indoor:S,co2:S");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-claude.pbm");
@@ -1403,11 +1540,11 @@ int main() {
     savePbm(canvas, "out/electricity-tomorrow.pbm");
 
     // Electricity widget in every size; and the menu with the price
-    widgetData.widgetCount = layoutWidgets("price:L,price:M,price:S,date:S,clock:W", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "price:L,price:M,price:S,date:S,clock:W");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-price.pbm");
-    widgetData.widgetCount = layoutWidgets("price:W,claude:M,co2:S,date:S,next:M,clock:M", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "price:W,claude:M,co2:S,date:S,next:M,clock:M");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-price-wide.pbm");
@@ -1416,11 +1553,11 @@ int main() {
     static AppData githubData;  // Large because of the event list
     githubData = widgetData;
     loadDemoGitHub(githubData);
-    githubData.widgetCount = layoutWidgets("github:W,github:L,github:M,github:S", githubData.widgets, MAX_WIDGETS);
+    setWidgets(githubData, "github:W,github:L,github:M,github:S");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, githubData);
     savePbm(canvas, "out/home2-github.pbm");
-    githubData.widgetCount = layoutWidgets("github:M,github:S,github:S,github:W", githubData.widgets, MAX_WIDGETS);
+    setWidgets(githubData, "github:M,github:S,github:S,github:W");
     githubData.githubTokenSet = false;
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, githubData);
@@ -1437,7 +1574,7 @@ int main() {
 
     // Weather in every size: large and wide add feels like, wind, sunrise, sunset
     AppData weatherData = widgetData;
-    weatherData.widgetCount = layoutWidgets("weather:L,weather:M,weather:S,weather:W", weatherData.widgets, MAX_WIDGETS);
+    setWidgets(weatherData, "weather:L,weather:M,weather:S,weather:W");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, weatherData);
     savePbm(canvas, "out/home2-weather.pbm");
@@ -1457,14 +1594,33 @@ int main() {
     widgetPage.draw(canvas, weatherData);
     savePbm(canvas, "out/home2-weather-none.pbm");
 
+    // Clear night (moon) in every size, with rain on Home
+    AppData nightData = widgetData;
+    nightData.weatherCode = 800;
+    nightData.epoch = nightData.sunset + 3 * 3600;
+    setWidgets(nightData, "weather:L,weather:M,weather:S,weather:W");
+    canvas.fillScreen(COLOR_BG);
+    widgetPage.draw(canvas, nightData);
+    savePbm(canvas, "out/home2-weather-night.pbm");
+
+    // Every weather icon with its name, for checking them by eye
+    canvas.fillScreen(COLOR_BG);
+    for (int i = 0; i < int(WeatherIcon::COUNT); i++) {
+        int16_t x = 9 + (i % 5) * 158;
+        int16_t y = 8 + (i / 5) * 158;
+        drawWeatherIcon(canvas, x, y, WeatherIcon(i));
+        Components::drawText(canvas, x, y + 124, weatherIconName(WeatherIcon(i)), FONT_SMALL);
+    }
+    savePbm(canvas, "out/weather-icons.pbm");
+
     // Old numbers and no numbers yet
     widgetData.claudeUpdated = widgetData.epoch - 95 * 60;
-    widgetData.widgetCount = layoutWidgets("claude:W,claude:M,claude:S,clock:S", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "claude:W,claude:M,claude:S,clock:S");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     widgetData.claudeValid = false;
     savePbm(canvas, "out/home2-claude-old.pbm");
-    widgetData.widgetCount = layoutWidgets("claude:W,claude:M,claude:S", widgetData.widgets, MAX_WIDGETS);
+    setWidgets(widgetData, "claude:W,claude:M,claude:S");
     canvas.fillScreen(COLOR_BG);
     widgetPage.draw(canvas, widgetData);
     savePbm(canvas, "out/home2-claude-none.pbm");

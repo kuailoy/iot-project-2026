@@ -2,6 +2,7 @@
 
 #include "Components.h"
 #include "../app/HabitStore.h"
+#include "../app/HomePages.h"
 
 #include <Arduino.h>
 
@@ -45,6 +46,13 @@ void UI::onRotate(int steps) {
         redrawNeeded = true;
     } else if (currentPage == POMODORO) {
         onPomodoroRotate(steps);
+    } else if (currentPage == WIDGETS) {
+        // Next or previous widget page, stops at the first and the last
+        int index = widgetIndex + steps;
+        index = index < 0 ? 0 : index >= widgetPages() ? widgetPages() - 1 : index;
+        if (index != widgetIndex) {
+            openWidgets(index);
+        }
     } else if (currentPage == HOME) {
         openPage(MENU);
     }
@@ -87,7 +95,7 @@ void UI::onPress() {
 
     switch (menuPage.selected()) {
         case MenuPage::DASHBOARD:
-            openPage(HOME);
+            openStart();
             break;
         case MenuPage::POMODORO:
             openPage(POMODORO);
@@ -137,7 +145,7 @@ void UI::onLongPress() {
     } else if (currentPage == POMODORO) {
         onPomodoroLongPress();
     } else {
-        openPage(HOME);
+        openStart();
     }
 }
 
@@ -151,13 +159,19 @@ void UI::onTouch() {
         return;  // Setup stays until it is done or cancelled; restarting can't be stopped
     }
 
-    // Switch between the two home pages; from anywhere else, the widget page
-    openPage(currentPage == WIDGETS ? HOME : WIDGETS);
+    // The pages in the order of the list on the phone (HomePages.h); from a
+    // page that isn't in the list (menu, settings...), the first one
+    int current = listPosition();
+    int target = HomePages::next(current, data->pageCount);
+    if (target == current) {
+        return;  // The only page: nothing to switch to, no refresh
+    }
+    openListPage(target);
 }
 
 void UI::onTouchHold() {
-    if (currentPage != HOME && currentPage != WIDGETS) {
-        onTouch();  // Power off only from a home page
+    if (listPosition() < 0) {
+        onTouch();  // Power off only from a page of the list
         return;
     }
     noteInput();
@@ -207,7 +221,7 @@ void UI::onPomodoroLongPress() {
     switch (pomodoro.state()) {
         case Pomodoro::READY:
         case Pomodoro::CYCLE_DONE:
-            openPage(HOME);
+            openStart();
             break;
         case Pomodoro::FOCUS:
             break;  // Pause first, so a slip of the finger can't end the session
@@ -267,6 +281,15 @@ void UI::update() {
         return;  // Draw the newest state once the panel is free
     }
 
+    // The widget page shown was deleted on the phone
+    if (currentPage == WIDGETS && widgetIndex >= widgetPages()) {
+        if (widgetPages() > 0) {
+            widgetIndex = 0;
+        } else {
+            openStart();
+        }
+    }
+
     display->clearBuffer();
     display->fillScreen(COLOR_BG);
 
@@ -282,7 +305,7 @@ void UI::update() {
             homePage.draw(*display, *data);
             break;
         case WIDGETS:
-            widgetPage.draw(*display, *data);
+            widgetPage.draw(*display, *data, widgetIndex);
             break;
         case SETTINGS:
             settingsPage.draw(*display, *data);
@@ -342,7 +365,7 @@ void UI::openSetup() {
 
 void UI::closeSetup() {
     if (currentPage == SETUP) {
-        openPage(HOME);
+        openStart();
     }
 }
 
@@ -374,11 +397,20 @@ void UI::showNextPage() {
     // Add new pages here so the test mode shows them too
     switch (currentPage) {
         case HOME:
-            openPage(WIDGETS);
+            if (widgetPages() > 0) {
+                openWidgets(0);
+            } else {
+                menuPage.select(MenuPage::DASHBOARD);
+                openPage(MENU);
+            }
             break;
         case WIDGETS:
-            menuPage.select(MenuPage::DASHBOARD);
-            openPage(MENU);
+            if (widgetIndex + 1 < widgetPages()) {
+                openWidgets(widgetIndex + 1);  // Every widget page
+            } else {
+                menuPage.select(MenuPage::DASHBOARD);
+                openPage(MENU);
+            }
             break;
         case SETTINGS:
             openPage(HOME);
@@ -446,7 +478,7 @@ bool UI::wakeUp() {
     if (currentPage != SLEEP) {
         return false;
     }
-    openPage(HOME);
+    openStart();
     return true;
 }
 
@@ -459,4 +491,65 @@ void UI::openPage(Page page) {
         resetPageOpenedMs = millis();  // Only a hold that starts here counts
         resetBoxesDrawn = 0;
     }
+}
+
+void UI::openWidgets(int index) {
+    if (index >= widgetPages()) {
+        openStart();
+        return;
+    }
+    widgetIndex = index;
+    openPage(WIDGETS);
+}
+
+void UI::openStart() {
+    openListPage(0);
+}
+
+int UI::listPosition() const {
+    for (int i = 0; i < data->pageCount; i++) {
+        const PageEntry& entry = data->pageList[i];
+        bool here = (entry.kind == PAGE_HOME && currentPage == HOME) ||
+                    (entry.kind == PAGE_CALENDAR && currentPage == CALENDAR) ||
+                    (entry.kind == PAGE_PRICES && currentPage == ELECTRICITY) ||
+                    (entry.kind == PAGE_MUSIC && currentPage == MUSIC) ||
+                    (entry.kind == PAGE_POMODORO && currentPage == POMODORO) ||
+                    (entry.kind == PAGE_WIDGETS && currentPage == WIDGETS && entry.grid == widgetIndex);
+        if (here) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void UI::openListPage(int position) {
+    if (position < 0 || position >= data->pageCount) {
+        position = 0;
+    }
+    const PageEntry& entry = data->pageList[position];
+    switch (entry.kind) {
+        case PAGE_HOME:
+            openPage(HOME);
+            break;
+        case PAGE_CALENDAR:
+            calendarPage.open();  // Today, day view
+            openPage(CALENDAR);
+            break;
+        case PAGE_PRICES:
+            electricityPage.open();  // Today
+            openPage(ELECTRICITY);
+            break;
+        case PAGE_MUSIC:
+            openPage(MUSIC);
+            break;
+        case PAGE_POMODORO:
+            openPage(POMODORO);
+            break;
+        default:
+            widgetIndex = entry.grid;
+            openPage(WIDGETS);
+            break;
+    }
+    Serial.printf("Screen: page %d of %d, %s\n", position + 1, data->pageCount,
+                  entry.kind == PAGE_WIDGETS ? "widgets" : pageName(entry.kind));
 }

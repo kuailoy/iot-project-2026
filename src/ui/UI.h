@@ -30,13 +30,15 @@ public:
     void onLongPress();
 
     // Touch button, call from handleInput().
-    // Tap (on release): wakes up from sleep, otherwise switches between the
-    // two home pages (Home and the widget page).
+    // Tap (on release): wakes up from sleep, otherwise goes through the pages
+    // of the list on the phone in order (Home, Calendar, widget pages...) and
+    // back to the first.
     void onTouch();
-    // Held for a few seconds: on a home page, shows the "turned off" page and
-    // asks main.cpp to power off (see readyToPowerOff); elsewhere like a tap.
+    // Held for a few seconds: on a page of the list, shows the "turned off"
+    // page and asks main.cpp to power off (see readyToPowerOff); elsewhere
+    // like a tap.
     void onTouchHold();
-    // A touch has started: counts as input, so slow downloads wait (inUse)
+    // A touch has started: counts as input, so the deep clean waits (inUse)
     void onTouchDown() { noteInput(); }
 
     // True once the "turned off" page is fully on the screen: main.cpp
@@ -57,8 +59,8 @@ public:
     // is collected and the newest state is drawn when it is free again.
     void update();
 
-    // True if a control was used in the last INPUT_ACTIVE_MS; slow work
-    // (downloads, the deep-clean refresh) waits until then
+    // True if a control was used in the last INPUT_ACTIVE_MS; the deep-clean
+    // refresh (a few seconds of flashing) waits until then
     bool inUse() const;
 
     // Force a full redraw, e.g. after new sensor or weather data
@@ -87,7 +89,7 @@ public:
 private:
     enum Page {
         HOME,
-        WIDGETS,   // Second home page
+        WIDGETS,   // A widget page (widgetIndex)
         MENU,
         CALENDAR,
         ELECTRICITY,
@@ -107,6 +109,7 @@ private:
     EinkDisplay* display = nullptr;
     const AppData* data = nullptr;
     Page currentPage = HOME;
+    int widgetIndex = 0;           // Which widget page WIDGETS shows
     bool redrawNeeded = true;
     bool refreshRequested = false;
     bool setupRequested = false;
@@ -177,4 +180,11 @@ private:
     bool wakeUp();
 
     void openPage(Page page);
+    void openWidgets(int index);  // A widget page; past the last one: the first page
+    // The first page of the list (Home, unless it was removed on the phone).
+    // Every "back home" (wake up, hold to go back, menu > Dashboard) opens it.
+    void openStart();
+    void openListPage(int position);  // A page of the list, 0 = the first
+    int listPosition() const;          // Of the page shown, -1 if it isn't in the list
+    int widgetPages() const { return data->widgetPageCount; }
 };

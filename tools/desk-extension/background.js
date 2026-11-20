@@ -91,7 +91,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "sync") {
+  if (area === "sync" && ("org" in changes || "minutes" in changes || "device" in changes)) {
     scheduleClaude();  // Saved in the extension's window
   }
 });

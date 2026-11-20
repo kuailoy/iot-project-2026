@@ -47,6 +47,16 @@ When a task is completed, close the related Issue.
 └── meetings/          # Meeting notes and decisions
 ```
 
+## Checks
+
+`tools/ui-preview/build.sh` builds the UI on the computer, runs the checks (parsers, layout, prices, dates,
+buttons, Pomodoro...) and saves every page as a picture in `tools/ui-preview/out/`.
+The checks also run on every firmware build, just before linking (`tools/run_checks.py`):
+
+- If a check fails, the build stops and nothing is uploaded. The output names each failed check.
+- They need `sh` and `g++`; on a computer without them (e.g. Windows without Git Bash) they are skipped with a warning.
+- `SKIP_CHECKS=1 pio run` builds once without them.
+
 ## Project Timeline
 
 | Milestone               | Deadline |
@@ -79,7 +89,7 @@ Everything else is on the settings page below.
 
 With the phone on the same Wi-Fi, open `http://desk.local` (or the IP / QR code from menu → Settings):
 
-- **Widgets** of the second home page (see below)
+- **Pages**: the pages the touch button goes through; add, remove and arrange them (see below)
 - **Weather city**: search by name (OpenWeatherMap geocoding, uses `WEATHER_API_KEY`) and pick one of the matches
 - **Calendar link**
 - **Wi-Fi**: switch to another network. If the new one doesn't work within ~20 s, the display goes back to the old one.
@@ -88,15 +98,61 @@ There is no login: anyone on the same Wi-Fi can open the page. Other web sites c
 (the forms need a token from the page itself), and the saved calendar link is never shown again.
 All settings are kept in the ESP32's flash (`src/app/Settings.cpp`), not in the code.
 Only 2.4 GHz networks work; WPA2-Enterprise networks such as eduroam are not supported.
+No page waits for slow work, so the screen and the knob keep working:
+- The Wi-Fi scan runs in the background, and the page shows "Looking for networks..." meanwhile.
+- The city search runs in the download task, and the page asks again until the answer is there.
+
+The style of all pages is one file, `src/web/style.css`. At build time `tools/web_assets.py` gzips it into
+the firmware (about 1.6 KB). Browsers keep it, so it is sent only once.
 Code: `src/services/SetupPortal.cpp` (setup Wi-Fi, web page), `src/ui/pages/SetupPage.cpp` (screen).
 
-## Second home page (widgets)
+## Pages
 
-The touch button switches between the normal Home page and a second page made of widgets.
+The touch button goes through a list of pages in order, then back to the first. The list is set on the settings page
+(`http://desk.local` → Pages). It can hold:
+- **Dedicated pages**, each at most once. Their layout is fixed:
+  - **Home**: clock, weather, indoor, next event;
+  - **Calendar**;
+  - **Electricity**;
+  - **Music**;
+  - **Pomodoro**.
+- Up to 5 **widget pages** that you arrange yourself.
 
-**Turning off**: on either home page, hold the touch button for 3 seconds. The screen shows "Turned off" with the time,
+The default list is Home and one widget page.
+
+On the settings page the pages are a numbered list, in the order the touch button shows them:
+- Tap a page to open it; the arrows on the open page move it up or down in the list.
+- **Add page** offers a widget page and the dedicated pages that aren't in the list yet.
+- **Remove this page** takes the open page out; one page always stays.
+- A dedicated page only shows what it does, its layout is fixed.
+- A widget page shows a preview: drag widgets to reorder them, or tap one to resize it, move it, remove it or send it
+  to another widget page. **+ Add widget** opens the list of widgets.
+- Removing Home is fine: waking up and going back then open the first page of the list.
+
+On the device, each page keeps its own controls. For example, on the Calendar the knob changes the day, and on a
+widget page it switches widget pages. Pages that aren't in the list stay in the menu. A tap on a page that isn't in
+the list (the menu, for example) opens the first page. Holding the touch button on any page of the list turns the
+device off.
+
+On widget pages, dots at the bottom show where the page is in the whole list.
+
+The serial monitor shows every tap and the page it opens (`Touch: tap (120 ms)`, `Screen: page 3 of 5, Calendar`).
+A touch shorter than 30 ms is a spike, e.g. from the E-Ink's power, not a finger, and it is ignored
+(`Touch: ignored a 4 ms spike`). Otherwise such spikes could skip pages.
+
+The list is saved as one text, pages separated by `|`, dedicated pages starting with `@`:
+`@home|clock:L,date:S|@calendar|github:W,price:M` (`src/app/WidgetLayout.*`, NVS key `pages`).
+A layout saved by an older version is read as before.
+
+The system screens are not in the list: the menu, Settings (address and QR code), the Wi-Fi setup, sleep and
+"Turned off".
+
+**Turning off**: on a page of the list, hold the touch button for 3 seconds. The screen shows "Turned off" with the time,
 and once you lift your finger the device goes into deep sleep (Wi-Fi, CO2 sensor and screen off; E-Ink keeps the page without power).
-Touch the button again to turn it on: it starts up like after a reset, in 10 to 20 seconds.
+Touch the button again to turn it on: Home comes back within a few seconds, with the clock right away
+(the ESP32 keeps the time while off), and weather, indoor values and events follow as they arrive.
+The Wi-Fi connects straight to the router and channel it used last time, without scanning every channel.
+Downloads run in a task of their own (`src/services/Downloader.*`), so the controls never wait for the network.
 Code: `powerOff()` and the touch handling in `handleInput()` in `src/main.cpp` (tap or hold: `src/app/PressGesture.h`), `src/ui/pages/PowerOffPage.cpp`.
 A tap now acts when the finger is lifted (so a hold isn't also a tap).
 Its layout is edited on the settings page (`http://desk.local` → Widgets).
@@ -104,6 +160,13 @@ The editor works like a phone home screen: drag widgets to reorder them, tap one
 Widgets: clock, date, weather, indoor (temperature, humidity, CO2), CO2, next event, today's events, Claude usage, electricity price.
 The large and wide weather widgets also show feels like, wind (m/s and where it comes from), sunrise and sunset,
 all from the same OpenWeatherMap request.
+The weather icon (Home and the medium, large and wide widgets) comes from the weather code. There are 14 icons:
+- clear, few clouds, clouds, overcast;
+- drizzle, rain, heavy rain, thunderstorm, snow, sleet;
+- mist, wind;
+- a moon instead of the sun between sunset and sunrise.
+
+Code: `src/ui/WeatherIcons.cpp`; `tools/ui-preview/out/weather-icons.png` shows them all.
 
 **Claude widget**: how much of your Claude plan's 5-hour session and weekly limit is used, with reset times.
 Claude has no official API for this, so a small Chrome extension reads it in your logged-in browser and sends
@@ -121,7 +184,10 @@ Restart asks first (Turn: cancel, Press: restart). Reset needs the knob held for
 `src/ui/UIDevice.cpp` (knob), `src/app/DeviceReset.*`, `restartDevice()` in `src/main.cpp`.
 
 **Now playing widget** and the **Music** page (menu → Music): what YouTube Music plays in your browser, with a progress bar,
+**Now playing widget** and the **Music** page (menu → Music): what YouTube Music plays in your browser, with the time into the song (the Music page also has a progress bar),
 sent by the same Chrome extension (`POST /music`). Setup: `tools/desk-extension/README.md`.
+Song titles are made plain ASCII on the device (`src/app/PlainText.*`): accents dropped, Cyrillic in Latin letters,
+emoji left out.
 Code: `src/services/NowPlaying.*` (message), `src/app/MusicData.h`, `src/ui/pages/MusicPage.cpp`, `drawMusic()` in `src/ui/pages/WidgetPage.cpp`.
 
 **GitHub widget**: your contribution graph of the last year, like on your GitHub profile (a column per week, Sunday at the top).
