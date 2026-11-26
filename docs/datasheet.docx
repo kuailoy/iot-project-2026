@@ -1,0 +1,47 @@
+
+
+
+
+Overall, the interaction flow can be summarised as follows. Upon startup, the device enters Calendar mode. A long press on the rotary encoder then returns the user to the Dashboard, where rotating the encoder allows the user to select a mode. From this selection stage, pressing the button provides access to the Calendar, Environment and Spotify modes. In each of these modes, a long press on the encoder returns the user to the Dashboard. Within Spotify mode, pressing the button pauses or resumes music playback. In addition, pressing the encoder on any interface refreshes the data, while a long press also provides access to configuration mode, in which settings such as location, API keys, refresh interval and display preferences can be adjusted through the web portal.
+
+Display — First Choice
+Adafruit 5.83" 648×480 Monochrome E-Ink — Product 6397
+
+648 × 480 resolution
+~138 PPI
+UC8179 controller
+DigiKey Finland
+Display — Alternative
+Adafruit 7.5" 800×480 Monochrome E-Ink — Product 6396
+
+800 × 480 resolution
+~124 PPI
+UC8179 controller
+DigiKey Finland
+E-Ink Driver / Adapter
+Adafruit E-Ink Bonnet for Raspberry Pi — Product 6418
+
+Raspberry Pi compatible
+Supports the selected UC8179 E-Ink displays
+DigiKey
+Adafruit
+Raspberry Pi
+Raspberry Pi Zero 2 W
+
+Wi-Fi + Bluetooth
+Python / Linux
+Verkkokauppa.com
+Interaction
+Rotary Encoder + Push Button
+Optional additional buttons
+Sensors
+Temperature / Humidity Sensor
+Optional Air Quality Sensor
+Other
+Other
+MicroSD Card
+3.7V Rechargeable Li-Po Battery
+Battery Charging / Power Management Module
+5V Boost Converter
+GPIO Header
+3D-Printed Enclosure
